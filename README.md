@@ -1,4 +1,4 @@
-# Testify Server 🚀
+# Testify Server 
 
 Testify Server is an Express.js & TypeScript backend for the **Testify** platform. It provides MongoDB connectivity, authentication powered by Better Auth, and RESTful API endpoints.
 
