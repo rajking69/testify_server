@@ -3,13 +3,14 @@ import cors from 'cors';
 import { toNodeHandler } from 'better-auth/node';
 import { auth } from './lib/auth';
 import { env } from './config/env';
+import apiRoutes from './routes';
 
 const app: Application = express();
 
 // CORS configuration
 app.use(
   cors({
-    origin: [env.frontend_url, env.better_auth_url].filter(Boolean),
+    origin: [env.frontend_url, env.better_auth_url, 'http://localhost:3000'].filter(Boolean),
     credentials: true,
   })
 );
@@ -21,13 +22,16 @@ app.use(express.urlencoded({ extended: true }));
 // Better Auth Route Handler
 app.all('/api/auth/*', toNodeHandler(auth));
 
-// Health Check Endpoint
+// API Health Check
 app.get('/api/health', (req: Request, res: Response) => {
   res.status(200).json({
     success: true,
     message: 'Testify API is running',
   });
 });
+
+// App API Routes (/api/exams, /api/subscriptions)
+app.use('/api', apiRoutes);
 
 // 404 Handler
 app.use((req: Request, res: Response) => {
