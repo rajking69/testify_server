@@ -21,5 +21,15 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
   },
-  trustedOrigins: [env.frontend_url, env.better_auth_url].filter(Boolean),
+  user: {
+    additionalFields: {
+      role: {
+        type: 'string',
+        required: false,
+        defaultValue: 'student',
+        input: true, // Allow role ('student' | 'teacher') during sign up
+      },
+    },
+  },
+  trustedOrigins: [env.frontend_url, env.better_auth_url, 'http://localhost:3000'].filter(Boolean),
 });
