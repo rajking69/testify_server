@@ -1,7 +1,7 @@
 import { betterAuth } from 'better-auth';
 import { mongodbAdapter } from 'better-auth/adapters/mongodb';
 import mongoose from 'mongoose';
-import config from '../config';
+import { env } from '../config/env';
 
 const dbProxy = new Proxy({} as any, {
   get(target, prop, receiver) {
@@ -16,10 +16,10 @@ const dbProxy = new Proxy({} as any, {
 
 export const auth = betterAuth({
   database: mongodbAdapter(dbProxy),
-  secret: config.better_auth_secret,
-  baseURL: config.better_auth_url,
+  secret: env.better_auth_secret,
+  baseURL: env.better_auth_url,
   emailAndPassword: {
     enabled: true,
   },
-  trustedOrigins: ['http://localhost:3000', 'http://localhost:5000'],
+  trustedOrigins: [env.frontend_url, env.better_auth_url].filter(Boolean),
 });

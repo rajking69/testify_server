@@ -1,30 +1,31 @@
-import express, { Application, Request, Response } from 'express';
+import express, { Application, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { toNodeHandler } from 'better-auth/node';
 import { auth } from './lib/auth';
-import config from './config';
+import { env } from './config/env';
 
 const app: Application = express();
 
-// Parsers & CORS
+// CORS configuration
 app.use(
   cors({
-    origin: ['http://localhost:3000', config.better_auth_url as string].filter(Boolean),
+    origin: [env.frontend_url, env.better_auth_url].filter(Boolean),
     credentials: true,
   })
 );
 
+// Body parsers
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Better Auth Endpoint
+// Better Auth Route Handler
 app.all('/api/auth/*', toNodeHandler(auth));
 
-// Root route
-app.get('/', (req: Request, res: Response) => {
+// Health Check Endpoint
+app.get('/api/health', (req: Request, res: Response) => {
   res.status(200).json({
     success: true,
-    message: 'Welcome to Testify Server API',
+    message: 'Testify API is running',
   });
 });
 
@@ -33,6 +34,15 @@ app.use((req: Request, res: Response) => {
   res.status(404).json({
     success: false,
     message: 'Route Not Found',
+  });
+});
+
+// Global Error Handler
+app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+  console.error('Unhandled Error:', err);
+  res.status(err.status || 500).json({
+    success: false,
+    message: err.message || 'Internal Server Error',
   });
 });
 

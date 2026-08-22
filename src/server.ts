@@ -1,33 +1,20 @@
-import mongoose from 'mongoose';
-import dns from 'node:dns';
 import app from './app';
-import config from './config';
+import { connectDB } from './config/db';
+import { env } from './config/env';
 
-// Ensure IPv4 first and system/google DNS for MongoDB SRV records
-try {
-  dns.setDefaultResultOrder('ipv4first');
-  dns.setServers(['8.8.8.8', '1.1.1.1']);
-} catch (e) {
-  // ignore if not supported in older node
-}
-
-async function main() {
+async function startServer(): Promise<void> {
   try {
-    if (!config.database_url) {
-      throw new Error('DATABASE_URL / MONGODB_URI is not defined in environment variables');
-    }
+    // 1. Connect to MongoDB Atlas
+    await connectDB();
 
-    await mongoose.connect(config.database_url as string, {
-      dbName: config.db_name,
-    });
-    console.log('⚡️ [database]: Connected to MongoDB successfully!');
-
-    app.listen(config.port, () => {
-      console.log(`🚀 [server]: Server is running on port ${config.port}`);
+    // 2. Start Express HTTP Server
+    app.listen(env.port, () => {
+      console.log(`Server running on port ${env.port}`);
     });
   } catch (error) {
-    console.error('❌ [error]: Failed to connect database/start server', error);
+    console.error('Failed to start server:', error);
+    process.exit(1);
   }
 }
 
-main();
+startServer();
