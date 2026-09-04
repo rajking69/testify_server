@@ -8,7 +8,7 @@ import {
   submitExam,
   getMySubmissions,
 } from '../controllers/exam.controller';
-import { requireAuth, optionalAuth } from '../middlewares/auth.middleware';
+import { requireAuth, optionalAuth, requireRole } from '../middlewares/auth.middleware';
 import {
   requireTeacherSubscription,
   requireExamAccess,
@@ -25,7 +25,7 @@ router.get('/my/submissions', requireAuth, getMySubmissions);
 router.get('/:id', optionalAuth, getExamById);
 
 // Teacher Exam Creation (Requires Teacher Role + Active Subscription)
-router.post('/', requireAuth, requireTeacherSubscription, createExam);
+router.post('/', requireAuth, requireRole('teacher', 'admin'), requireTeacherSubscription, createExam);
 
 // Student Exam Purchase (One-time payment for paid/special exams)
 router.post('/:id/purchase', requireAuth, purchaseExam);
