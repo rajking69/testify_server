@@ -220,6 +220,21 @@ export const purchaseExam = async (req: Request, res: Response): Promise<void> =
       return;
     }
 
+    // Check if student has already completed and submitted this exam
+    const alreadySubmitted = await ExamSubmission.findOne({
+      examId: exam._id,
+      $or: [{ studentId: user.id }, { studentEmail: user.email }],
+    });
+
+    if (alreadySubmitted) {
+      res.status(403).json({
+        success: false,
+        code: 'ALREADY_COMPLETED',
+        message: 'You have already attempted and submitted this examination. Retakes and re-purchases are not permitted.',
+      });
+      return;
+    }
+
     // Check existing purchase
     const existing = await ExamPurchase.findOne({
       studentId: user.id,
@@ -273,6 +288,21 @@ export const submitExam = async (req: Request, res: Response): Promise<void> => 
     const exam = await Exam.findById(id);
     if (!exam) {
       res.status(404).json({ success: false, message: 'Exam not found' });
+      return;
+    }
+
+    // 1-attempt guard: check if student has already completed this exam
+    const existingSubmission = await ExamSubmission.findOne({
+      examId: exam._id,
+      $or: [{ studentId: user.id }, { studentEmail: user.email }],
+    });
+
+    if (existingSubmission) {
+      res.status(403).json({
+        success: false,
+        code: 'ALREADY_COMPLETED',
+        message: 'You have already attempted this examination. Only one attempt is permitted per account.',
+      });
       return;
     }
 

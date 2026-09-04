@@ -14,6 +14,8 @@ import {
   requireExamAccess,
 } from '../middlewares/subscription.middleware';
 
+import { ExamSubmission } from '../models/exam-submission.model';
+
 const router = Router();
 
 // Public route: Only shows free exams, no login required
@@ -31,7 +33,22 @@ router.post('/', requireAuth, requireRole('teacher', 'admin'), requireTeacherSub
 router.post('/:id/purchase', requireAuth, purchaseExam);
 
 // Student Exam Start & Submit (Requires Login + Free / Subscription / Purchase verification)
-router.post('/:id/start', requireAuth, requireExamAccess, (req, res) => {
+router.post('/:id/start', requireAuth, requireExamAccess, async (req, res): Promise<void> => {
+  const user = req.user!;
+  const existing = await ExamSubmission.findOne({
+    examId: req.params.id,
+    $or: [{ studentId: user.id }, { studentEmail: user.email }],
+  });
+
+  if (existing) {
+    res.status(403).json({
+      success: false,
+      code: 'ALREADY_COMPLETED',
+      message: 'You have already attempted this examination. Only one attempt is permitted per account.',
+    });
+    return;
+  }
+
   res.status(200).json({
     success: true,
     message: 'Exam access verified. You can now begin.',
