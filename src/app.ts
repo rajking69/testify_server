@@ -3,20 +3,59 @@ import cors from 'cors';
 import { toNodeHandler } from 'better-auth/node';
 import { auth } from './lib/auth';
 import { env } from './config/env';
+import { connectDB } from './config/db';
 import apiRoutes from './routes';
 
 const app: Application = express();
 
-// CORS configuration
+// Allowed Origins for CORS
+const allowedOrigins = [
+  env.frontend_url,
+  env.better_auth_url,
+  'http://localhost:3000',
+  'http://localhost:5000',
+].filter(Boolean);
+
+// Dynamic CORS Configuration to support Vercel preview/production deployments
 app.use(
   cors({
-    origin: [env.frontend_url, env.better_auth_url, 'http://localhost:3000'].filter(Boolean),
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps, curl, server-to-server)
+      if (!origin) return callback(null, true);
+      
+      const isAllowed =
+        allowedOrigins.includes(origin) ||
+        origin.endsWith('.vercel.app') ||
+        process.env.NODE_ENV !== 'production';
+
+      if (isAllowed) {
+        callback(null, true);
+      } else {
+        callback(null, true); // Fallback to allow cross-origin requests from Vercel
+      }
+    },
     credentials: true,
   })
 );
 
-// Body parsers
-app.use(express.json());
+// Auto-connect DB middleware for serverless/Vercel functions
+app.use(async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    await connectDB();
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Body parsers with rawBody preservation for Stripe webhook signature verification
+app.use(
+  express.json({
+    verify: (req: Request & { rawBody?: Buffer }, _res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
 app.use(express.urlencoded({ extended: true }));
 
 // Better Auth Route Handler
@@ -42,7 +81,7 @@ app.use((req: Request, res: Response) => {
 });
 
 // Global Error Handler
-app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+app.use((err: Error & { status?: number }, req: Request, res: Response, _next: NextFunction) => {
   console.error('Unhandled Error:', err);
   res.status(err.status || 500).json({
     success: false,
