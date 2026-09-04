@@ -21,6 +21,24 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
   },
+  socialProviders: {
+    ...(env.google_client_id && env.google_client_secret
+      ? {
+          google: {
+            clientId: env.google_client_id,
+            clientSecret: env.google_client_secret,
+          },
+        }
+      : {}),
+    ...(env.github_client_id && env.github_client_secret
+      ? {
+          github: {
+            clientId: env.github_client_id,
+            clientSecret: env.github_client_secret,
+          },
+        }
+      : {}),
+  },
   user: {
     additionalFields: {
       role: {

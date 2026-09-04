@@ -77,7 +77,7 @@ export const getQuestions = async (req: Request, res: Response): Promise<void> =
 
     const { search, category, subject, topic, difficulty, questionType, status, sort = 'newest' } = req.query;
 
-    const filter: any = {};
+    const filter: Record<string, unknown> = {};
 
     // Teachers only see their own questions; Admins can see all or filter by specific teacher
     if (user.role !== 'admin') {
@@ -424,7 +424,7 @@ export const selectQuestionsForExam = async (req: Request, res: Response): Promi
         return;
       }
 
-      const matchFilter: any = {};
+      const matchFilter: Record<string, unknown> = {};
       if (user.role !== 'admin') matchFilter.createdBy = user.id;
 
       if (category || subject) {

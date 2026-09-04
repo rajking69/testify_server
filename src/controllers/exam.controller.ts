@@ -44,9 +44,12 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
       .lean();
 
     if (!user) {
-      // If guest, show only free
-      const freeExams = exams.filter((e) => e.accessType === 'free');
-      res.status(200).json({ success: true, count: freeExams.length, data: freeExams });
+      // Unauthenticated users see all published exams, with unlock status based on free access
+      const mappedExams = exams.map((exam) => ({
+        ...exam,
+        isUnlocked: exam.accessType === 'free',
+      }));
+      res.status(200).json({ success: true, count: mappedExams.length, data: mappedExams });
       return;
     }
 
@@ -111,6 +114,15 @@ export const getExamById = async (req: Request, res: Response): Promise<void> =>
       return;
     }
 
+    // Check if user has already submitted (if authenticated)
+    let existingSubmission = null;
+    if (user) {
+      existingSubmission = await ExamSubmission.findOne({
+        examId: exam._id,
+        $or: [{ studentId: user.id }, { studentEmail: user.email }],
+      });
+    }
+
     const isCreatorOrAdmin =
       user && (user.role === 'admin' || (user.role === 'teacher' && exam.teacherId === user.id));
 
@@ -118,7 +130,8 @@ export const getExamById = async (req: Request, res: Response): Promise<void> =>
     const examData: any = exam.toObject();
     if (!isCreatorOrAdmin && examData.questions) {
       examData.questions = examData.questions.map((q: any) => ({
-        id: q.id,
+        _id: q._id || q.id,
+        id: q.id || q._id,
         questionText: q.questionText,
         options: q.options,
         marks: q.marks,
