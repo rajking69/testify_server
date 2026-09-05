@@ -6,7 +6,7 @@ services:
     region: singapore
     branch: dev
     buildCommand: npm install && npm run build
-    startCommand: npm start
+    startCommand: node dist/server.js
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
