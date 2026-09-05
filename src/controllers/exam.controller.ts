@@ -7,17 +7,35 @@ import { UserSubscription } from '../models/subscription.model';
 // 1. GET /api/exams/public - Guest/Public list of Free exams ONLY
 export const getPublicExams = async (req: Request, res: Response): Promise<void> => {
   try {
-    const exams = await Exam.find({
-      isPublished: true,
+    const { category, search } = req.query;
+    const filter: any = {
+      isPublished: { $ne: false },
       accessType: 'free',
-    })
+    };
+
+    if (category && category !== 'all' && category !== 'All') {
+      filter.category = new RegExp(`^${category}$`, 'i');
+    }
+
+    if (search) {
+      filter.title = { $regex: String(search), $options: 'i' };
+    }
+
+    const exams = await Exam.find(filter)
       .select('-questions.correctOptionIndex -questions.explanation')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const mappedExams = exams.map((exam) => ({
+      ...exam,
+      id: exam._id.toString(),
+      isUnlocked: true,
+    }));
 
     res.status(200).json({
       success: true,
-      count: exams.length,
-      data: exams,
+      count: mappedExams.length,
+      data: mappedExams,
     });
   } catch (error) {
     res.status(500).json({
@@ -32,11 +50,42 @@ export const getPublicExams = async (req: Request, res: Response): Promise<void>
 export const getAllExams = async (req: Request, res: Response): Promise<void> => {
   try {
     const user = req.user;
-    const { category, accessType } = req.query;
+    const { category, accessType, teacherId, teacherEmail, mine, isPublished, search } = req.query;
 
-    const filter: any = { isPublished: true };
-    if (category) filter.category = category;
-    if (accessType) filter.accessType = accessType;
+    const filter: any = {};
+
+    if (mine === 'true' && user) {
+      filter.$or = [{ teacherId: user.id }, { teacherEmail: user.email }];
+    } else if (teacherId) {
+      filter.teacherId = teacherId;
+    } else if (teacherEmail) {
+      filter.teacherEmail = teacherEmail;
+    } else if (isPublished !== undefined) {
+      filter.isPublished = isPublished === 'true';
+    } else if (!user || user.role === 'student') {
+      filter.isPublished = { $ne: false };
+    }
+
+    if (category && category !== 'all' && category !== 'All') {
+      filter.category = new RegExp(`^${category}$`, 'i');
+    }
+
+    if (accessType && accessType !== 'all' && accessType !== 'All') {
+      filter.accessType = accessType;
+    }
+
+    if (search) {
+      const searchRegex = new RegExp(String(search), 'i');
+      if (filter.$or) {
+        filter.$and = [
+          { $or: filter.$or },
+          { $or: [{ title: searchRegex }, { description: searchRegex }, { category: searchRegex }] },
+        ];
+        delete filter.$or;
+      } else {
+        filter.$or = [{ title: searchRegex }, { description: searchRegex }, { category: searchRegex }];
+      }
+    }
 
     const exams = await Exam.find(filter)
       .select('-questions.correctOptionIndex -questions.explanation')
@@ -44,9 +93,9 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
       .lean();
 
     if (!user) {
-      // Unauthenticated users see all published exams, with unlock status based on free access
       const mappedExams = exams.map((exam) => ({
         ...exam,
+        id: exam._id.toString(),
         isUnlocked: exam.accessType === 'free',
       }));
       res.status(200).json({ success: true, count: mappedExams.length, data: mappedExams });
@@ -74,7 +123,9 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
 
     // Map unlock status
     const mappedExams = exams.map((exam) => {
-      const isCreator = user.role === 'teacher' && exam.teacherId === user.id;
+      const isCreator =
+        user.role === 'admin' ||
+        (user.role === 'teacher' && (exam.teacherId === user.id || exam.teacherEmail === user.email));
       const isUnlocked =
         user.role === 'admin' ||
         isCreator ||
@@ -84,6 +135,7 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
 
       return {
         ...exam,
+        id: exam._id.toString(),
         isUnlocked,
       };
     });
