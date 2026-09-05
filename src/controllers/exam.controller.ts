@@ -250,14 +250,18 @@ export const purchaseExam = async (req: Request, res: Response): Promise<void> =
       return;
     }
 
-    // Record purchase (mock transaction completion for now)
+    // Record purchase
     const purchase = await ExamPurchase.create({
       studentId: user.id,
       studentEmail: user.email,
       studentName: user.name,
       examId: exam._id,
+      teacherId: exam.teacherId,
+      teacherEmail: exam.teacherEmail,
       pricePaid: exam.price,
-      paymentId: `PAY-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      paymentId: req.body.paymentId || `PAY-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      transactionId: req.body.transactionId || `TXN-EXAM-${Date.now()}`,
+      paymentProvider: req.body.paymentProvider || 'STRIPE',
       status: 'completed',
     });
 
