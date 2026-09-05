@@ -7,6 +7,8 @@ build/
 
 # Environment variables (Sensitive - DO NOT COMMIT)
 .env
+.env.*
+!.env.example
 .env.local
 .env.*.local
 
