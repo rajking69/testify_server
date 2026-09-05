@@ -61,11 +61,27 @@ app.use(express.urlencoded({ extended: true }));
 // Better Auth Route Handler
 app.all('/api/auth/*', toNodeHandler(auth));
 
+// Root Status & Info
+app.get('/', (req: Request, res: Response) => {
+  res.status(200).json({
+    success: true,
+    message: 'Welcome to Testify Server API 🚀',
+    version: '1.0.0',
+    status: 'online',
+    endpoints: {
+      health: '/api/health',
+      auth: '/api/auth',
+      api: '/api',
+    },
+  });
+});
+
 // API Health Check
 app.get('/api/health', (req: Request, res: Response) => {
   res.status(200).json({
     success: true,
     message: 'Testify API is running',
+    timestamp: new Date().toISOString(),
   });
 });
 
