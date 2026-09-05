@@ -3,6 +3,7 @@ import { requireAuth, requireRole } from '../middlewares/auth.middleware';
 import {
   createTeacherPremiumCheckout,
   getTeacherPremiumStatus,
+  getTeacherRevenue,
   handleStripeWebhook,
 } from '../controllers/payment.controller';
 
@@ -25,5 +26,14 @@ router.get(
 
 // 3. Stripe Webhook
 router.post('/stripe/webhook', handleStripeWebhook);
+
+
+// 4. Teacher Revenue & Sales Analytics Endpoint
+router.get(
+  '/teacher/revenue',
+  requireAuth,
+  requireRole('teacher', 'admin'),
+  getTeacherRevenue
+);
 
 export default router;
