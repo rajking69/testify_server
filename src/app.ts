@@ -8,33 +8,30 @@ import apiRoutes from './routes';
 
 const app: Application = express();
 
+// Trust reverse proxy (Required for Render HTTPS load balancers)
+app.set('trust proxy', 1);
+
 // Allowed Origins for CORS
 const allowedOrigins = [
   env.frontend_url,
   env.better_auth_url,
   'http://localhost:3000',
+  'http://localhost:3001',
   'http://localhost:5000',
+  'http://localhost:5173',
 ].filter(Boolean);
 
-// Dynamic CORS Configuration to support Vercel preview/production deployments
+// Dynamic CORS Configuration
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (like mobile apps, curl, server-to-server)
-      if (!origin) return callback(null, true);
-      
-      const isAllowed =
-        allowedOrigins.includes(origin) ||
-        origin.endsWith('.vercel.app') ||
-        process.env.NODE_ENV !== 'production';
-
-      if (isAllowed) {
-        callback(null, true);
-      } else {
-        callback(null, true); // Fallback to allow cross-origin requests from Vercel
-      }
+      // Allow requests with credentials from all frontend origins
+      callback(null, true);
     },
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Cookie', 'X-Requested-With', 'Accept'],
+    exposedHeaders: ['Set-Cookie'],
   })
 );
 

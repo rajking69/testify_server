@@ -49,5 +49,19 @@ export const auth = betterAuth({
       },
     },
   },
-  trustedOrigins: [env.frontend_url, env.better_auth_url, 'http://localhost:3000'].filter(Boolean),
+  advanced: {
+    defaultCookieAttributes: {
+      sameSite: 'none',
+      secure: true,
+      httpOnly: true,
+    },
+  },
+  trustedOrigins: [
+    env.frontend_url,
+    env.better_auth_url,
+    'http://localhost:3000',
+    'http://localhost:3001',
+    'http://localhost:5173',
+    'https://*.vercel.app',
+  ].filter(Boolean),
 });
