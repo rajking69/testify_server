@@ -8,12 +8,12 @@ import apiRoutes from './routes';
 const app: Application = express();
 
 // CORS configuration
-app.use(
-  cors({
-    origin: [env.frontend_url, env.better_auth_url, 'http://localhost:3000'].filter(Boolean),
+app.use(cors({
+    origin: env.frontend_url,
     credentials: true,
-  })
-);
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "Cookie"],
+}));
 
 // Body parsers
 app.use(express.json());
@@ -23,10 +23,10 @@ app.use(express.urlencoded({ extended: true }));
 app.all('/api/auth/*', toNodeHandler(auth));
 
 // API Health Check
-app.get('/api/health', (req: Request, res: Response) => {
+app.get('/', (req: Request, res: Response) => {
   res.status(200).json({
     success: true,
-    message: 'Testify API is running',
+    message: 'Testify server is running',
   });
 });
 
