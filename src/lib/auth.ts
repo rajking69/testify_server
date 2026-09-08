@@ -24,7 +24,6 @@ export const auth = betterAuth({
   database: mongodbAdapter(dbProxy),
   secret: env.better_auth_secret,
   baseURL: env.better_auth_url,
-  trustedOrigins: [env.frontend_url],
   emailAndPassword: {
     enabled: true,
   },
