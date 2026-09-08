@@ -4,9 +4,12 @@ import {
   getAllExams,
   getExamById,
   createExam,
+  updateExam,
+  deleteExam,
   purchaseExam,
   submitExam,
   getMySubmissions,
+  getMyPurchases,
 } from '../controllers/exam.controller';
 import { requireAuth, optionalAuth, requireRole } from '../middlewares/auth.middleware';
 import {
@@ -14,41 +17,29 @@ import {
   requireExamAccess,
 } from '../middlewares/subscription.middleware';
 
-import { ExamSubmission } from '../models/exam-submission.model';
-
 const router = Router();
 
-// Public route: Only shows free exams, no login required
+// Public route: Shows all published exams (free and paid), sanitized questions
 router.get('/public', getPublicExams);
 
 // Authenticated / Optional routes
 router.get('/', optionalAuth, getAllExams);
 router.get('/my/submissions', requireAuth, getMySubmissions);
+router.get('/my/purchases', requireAuth, getMyPurchases);
 router.get('/:id', optionalAuth, getExamById);
 
 // Teacher Exam Creation (Requires Teacher Role + Active Subscription)
 router.post('/', requireAuth, requireRole('teacher', 'admin'), requireTeacherSubscription, createExam);
 
-// Student Exam Purchase (One-time payment for paid/special exams)
+// Teacher Exam Update & Delete (Enforces Teacher Ownership or Admin)
+router.patch('/:id', requireAuth, requireRole('teacher', 'admin'), updateExam);
+router.delete('/:id', requireAuth, requireRole('teacher', 'admin'), deleteExam);
+
+// Student Exam Purchase (One-time payment for paid/special exams; forbidden for teachers)
 router.post('/:id/purchase', requireAuth, purchaseExam);
 
-// Student Exam Start & Submit (Requires Login + Free / Subscription / Purchase verification)
+// Student Exam Start & Submit (Enforces Student role, 1 attempt limit, and purchase/subscription check)
 router.post('/:id/start', requireAuth, requireExamAccess, async (req, res): Promise<void> => {
-  const user = req.user!;
-  const existing = await ExamSubmission.findOne({
-    examId: req.params.id,
-    $or: [{ studentId: user.id }, { studentEmail: user.email }],
-  });
-
-  if (existing) {
-    res.status(403).json({
-      success: false,
-      code: 'ALREADY_COMPLETED',
-      message: 'You have already attempted this examination. Only one attempt is permitted per account.',
-    });
-    return;
-  }
-
   res.status(200).json({
     success: true,
     message: 'Exam access verified. You can now begin.',

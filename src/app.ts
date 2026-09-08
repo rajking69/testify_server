@@ -11,22 +11,39 @@ const app: Application = express();
 // Trust reverse proxy (Required for Render HTTPS load balancers)
 app.set('trust proxy', 1);
 
-// Allowed Origins for CORS
-const allowedOrigins = [
-  env.frontend_url,
-  env.better_auth_url,
-  'http://localhost:3000',
-  'http://localhost:3001',
-  'http://localhost:5000',
-  'http://localhost:5173',
-].filter(Boolean);
+// Normalize allowed origins (strip trailing slash)
+const allowedOrigins = env.allowed_origins.map((o) => o.replace(/\/+$/, ''));
+
+// Helper to check whether an incoming origin is permitted
+const isOriginAllowed = (origin: string): boolean => {
+  const normalized = origin.replace(/\/+$/, '');
+  if (allowedOrigins.includes(normalized)) {
+    return true;
+  }
+  // Allow localhost & 127.0.0.1 on any port in development
+  if (!env.is_production && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(normalized)) {
+    return true;
+  }
+  // Allow preview deployments on Vercel
+  if (/^https?:\/\/[a-zA-Z0-9-_]+\.vercel\.app$/.test(normalized)) {
+    return true;
+  }
+  return false;
+};
 
 // Dynamic CORS Configuration
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with credentials from all frontend origins
-      callback(null, true);
+      // Allow requests with no origin (e.g. mobile apps, curl, server-to-server, health checks)
+      if (!origin) {
+        return callback(null, true);
+      }
+      if (isOriginAllowed(origin)) {
+        return callback(null, true);
+      }
+      console.warn(`[CORS] Blocked request from origin: ${origin}`);
+      return callback(new Error(`CORS policy: Origin ${origin} not allowed by Access-Control-Allow-Origin.`));
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
@@ -68,6 +85,7 @@ app.get('/api/health', (req: Request, res: Response) => {
   res.status(200).json({
     status: 'ok',
     message: 'Server is running',
+    environment: env.node_env,
   });
 });
 
@@ -78,15 +96,18 @@ app.use('/api', apiRoutes);
 app.use((req: Request, res: Response) => {
   res.status(404).json({
     success: false,
+    code: 'NOT_FOUND',
     message: 'Route Not Found',
   });
 });
 
 // Global Error Handler
-app.use((err: Error & { status?: number }, req: Request, res: Response, _next: NextFunction) => {
+app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
   console.error('Unhandled Error:', err);
-  res.status(err.status || 500).json({
+  const status = err.status || err.statusCode || (err.message?.startsWith('CORS policy') ? 403 : 500);
+  res.status(status).json({
     success: false,
+    code: err.code || (status === 403 ? 'FORBIDDEN' : status === 404 ? 'NOT_FOUND' : 'INTERNAL_SERVER_ERROR'),
     message: err.message || 'Internal Server Error',
   });
 });
