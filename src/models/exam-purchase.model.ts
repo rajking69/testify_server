@@ -5,9 +5,13 @@ export interface IExamPurchase extends Document {
   studentEmail: string;
   studentName?: string;
   examId: Types.ObjectId;
+  teacherId: string;
+  teacherEmail?: string;
   pricePaid: number;
   paymentId?: string;
-  status: 'completed' | 'pending' | 'failed';
+  transactionId?: string;
+  paymentProvider?: string;
+  status: 'completed' | 'pending' | 'failed' | 'cancelled';
   createdAt: Date;
   updatedAt: Date;
 }
@@ -18,18 +22,23 @@ const examPurchaseSchema = new Schema<IExamPurchase>(
     studentEmail: { type: String, required: true },
     studentName: { type: String },
     examId: { type: Schema.Types.ObjectId, ref: 'Exam', required: true, index: true },
+    teacherId: { type: String, required: true, index: true },
+    teacherEmail: { type: String },
     pricePaid: { type: Number, required: true, min: 0 },
     paymentId: { type: String },
+    transactionId: { type: String },
+    paymentProvider: { type: String, default: 'STRIPE' },
     status: {
       type: String,
-      enum: ['completed', 'pending', 'failed'],
+      enum: ['completed', 'pending', 'failed', 'cancelled'],
       default: 'completed',
     },
   },
   { timestamps: true }
 );
 
-// Prevent duplicate active purchases
+// Indexes for fast revenue queries & deduplication
 examPurchaseSchema.index({ studentId: 1, examId: 1 }, { unique: true });
+examPurchaseSchema.index({ teacherId: 1, createdAt: -1 });
 
 export const ExamPurchase = model<IExamPurchase>('ExamPurchase', examPurchaseSchema);

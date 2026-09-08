@@ -7,17 +7,35 @@ import { UserSubscription } from '../models/subscription.model';
 // 1. GET /api/exams/public - Guest/Public list of Free exams ONLY
 export const getPublicExams = async (req: Request, res: Response): Promise<void> => {
   try {
-    const exams = await Exam.find({
-      isPublished: true,
+    const { category, search } = req.query;
+    const filter: any = {
+      isPublished: { $ne: false },
       accessType: 'free',
-    })
+    };
+
+    if (category && category !== 'all' && category !== 'All') {
+      filter.category = new RegExp(`^${category}$`, 'i');
+    }
+
+    if (search) {
+      filter.title = { $regex: String(search), $options: 'i' };
+    }
+
+    const exams = await Exam.find(filter)
       .select('-questions.correctOptionIndex -questions.explanation')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const mappedExams = exams.map((exam) => ({
+      ...exam,
+      id: exam._id.toString(),
+      isUnlocked: true,
+    }));
 
     res.status(200).json({
       success: true,
-      count: exams.length,
-      data: exams,
+      count: mappedExams.length,
+      data: mappedExams,
     });
   } catch (error) {
     res.status(500).json({
@@ -32,11 +50,42 @@ export const getPublicExams = async (req: Request, res: Response): Promise<void>
 export const getAllExams = async (req: Request, res: Response): Promise<void> => {
   try {
     const user = req.user;
-    const { category, accessType } = req.query;
+    const { category, accessType, teacherId, teacherEmail, mine, isPublished, search } = req.query;
 
-    const filter: any = { isPublished: true };
-    if (category) filter.category = category;
-    if (accessType) filter.accessType = accessType;
+    const filter: any = {};
+
+    if (mine === 'true' && user) {
+      filter.$or = [{ teacherId: user.id }, { teacherEmail: user.email }];
+    } else if (teacherId) {
+      filter.teacherId = teacherId;
+    } else if (teacherEmail) {
+      filter.teacherEmail = teacherEmail;
+    } else if (isPublished !== undefined) {
+      filter.isPublished = isPublished === 'true';
+    } else if (!user || user.role === 'student') {
+      filter.isPublished = { $ne: false };
+    }
+
+    if (category && category !== 'all' && category !== 'All') {
+      filter.category = new RegExp(`^${category}$`, 'i');
+    }
+
+    if (accessType && accessType !== 'all' && accessType !== 'All') {
+      filter.accessType = accessType;
+    }
+
+    if (search) {
+      const searchRegex = new RegExp(String(search), 'i');
+      if (filter.$or) {
+        filter.$and = [
+          { $or: filter.$or },
+          { $or: [{ title: searchRegex }, { description: searchRegex }, { category: searchRegex }] },
+        ];
+        delete filter.$or;
+      } else {
+        filter.$or = [{ title: searchRegex }, { description: searchRegex }, { category: searchRegex }];
+      }
+    }
 
     const exams = await Exam.find(filter)
       .select('-questions.correctOptionIndex -questions.explanation')
@@ -44,9 +93,12 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
       .lean();
 
     if (!user) {
-      // If guest, show only free
-      const freeExams = exams.filter((e) => e.accessType === 'free');
-      res.status(200).json({ success: true, count: freeExams.length, data: freeExams });
+      const mappedExams = exams.map((exam) => ({
+        ...exam,
+        id: exam._id.toString(),
+        isUnlocked: exam.accessType === 'free',
+      }));
+      res.status(200).json({ success: true, count: mappedExams.length, data: mappedExams });
       return;
     }
 
@@ -71,7 +123,9 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
 
     // Map unlock status
     const mappedExams = exams.map((exam) => {
-      const isCreator = user.role === 'teacher' && exam.teacherId === user.id;
+      const isCreator =
+        user.role === 'admin' ||
+        (user.role === 'teacher' && (exam.teacherId === user.id || exam.teacherEmail === user.email));
       const isUnlocked =
         user.role === 'admin' ||
         isCreator ||
@@ -81,6 +135,7 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
 
       return {
         ...exam,
+        id: exam._id.toString(),
         isUnlocked,
       };
     });
@@ -111,6 +166,15 @@ export const getExamById = async (req: Request, res: Response): Promise<void> =>
       return;
     }
 
+    // Check if user has already submitted (if authenticated)
+    let existingSubmission = null;
+    if (user) {
+      existingSubmission = await ExamSubmission.findOne({
+        examId: exam._id,
+        $or: [{ studentId: user.id }, { studentEmail: user.email }],
+      });
+    }
+
     const isCreatorOrAdmin =
       user && (user.role === 'admin' || (user.role === 'teacher' && exam.teacherId === user.id));
 
@@ -118,7 +182,8 @@ export const getExamById = async (req: Request, res: Response): Promise<void> =>
     const examData: any = exam.toObject();
     if (!isCreatorOrAdmin && examData.questions) {
       examData.questions = examData.questions.map((q: any) => ({
-        id: q.id,
+        _id: q._id || q.id,
+        id: q.id || q._id,
         questionText: q.questionText,
         options: q.options,
         marks: q.marks,
@@ -207,6 +272,21 @@ export const purchaseExam = async (req: Request, res: Response): Promise<void> =
       return;
     }
 
+    // Check if student has already completed and submitted this exam
+    const alreadySubmitted = await ExamSubmission.findOne({
+      examId: exam._id,
+      $or: [{ studentId: user.id }, { studentEmail: user.email }],
+    });
+
+    if (alreadySubmitted) {
+      res.status(403).json({
+        success: false,
+        code: 'ALREADY_COMPLETED',
+        message: 'You have already attempted and submitted this examination. Retakes and re-purchases are not permitted.',
+      });
+      return;
+    }
+
     // Check existing purchase
     const existing = await ExamPurchase.findOne({
       studentId: user.id,
@@ -222,14 +302,18 @@ export const purchaseExam = async (req: Request, res: Response): Promise<void> =
       return;
     }
 
-    // Record purchase (mock transaction completion for now)
+    // Record purchase
     const purchase = await ExamPurchase.create({
       studentId: user.id,
       studentEmail: user.email,
       studentName: user.name,
       examId: exam._id,
+      teacherId: exam.teacherId,
+      teacherEmail: exam.teacherEmail,
       pricePaid: exam.price,
-      paymentId: `PAY-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      paymentId: req.body.paymentId || `PAY-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      transactionId: req.body.transactionId || `TXN-EXAM-${Date.now()}`,
+      paymentProvider: req.body.paymentProvider || 'STRIPE',
       status: 'completed',
     });
 
@@ -260,6 +344,21 @@ export const submitExam = async (req: Request, res: Response): Promise<void> => 
     const exam = await Exam.findById(id);
     if (!exam) {
       res.status(404).json({ success: false, message: 'Exam not found' });
+      return;
+    }
+
+    // 1-attempt guard: check if student has already completed this exam
+    const existingSubmission = await ExamSubmission.findOne({
+      examId: exam._id,
+      $or: [{ studentId: user.id }, { studentEmail: user.email }],
+    });
+
+    if (existingSubmission) {
+      res.status(403).json({
+        success: false,
+        code: 'ALREADY_COMPLETED',
+        message: 'You have already attempted this examination. Only one attempt is permitted per account.',
+      });
       return;
     }
 

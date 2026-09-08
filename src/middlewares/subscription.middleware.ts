@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import User from '../models/user.model';
 import { UserSubscription } from '../models/subscription.model';
 import { Exam } from '../models/exam.model';
 import { ExamPurchase } from '../models/exam-purchase.model';
@@ -34,8 +35,13 @@ export const requireTeacherSubscription = async (
       return;
     }
 
-    // Check active subscription for teacher
+    // Check active premium status or subscription for teacher
     const now = new Date();
+    const dbUser = await User.findById(user.id);
+    const isUserPremium = Boolean(
+      dbUser?.isPremium && dbUser.premiumExpiresAt && dbUser.premiumExpiresAt > now
+    );
+
     const activeSubscription = await UserSubscription.findOne({
       userId: user.id,
       role: 'teacher',
@@ -43,12 +49,12 @@ export const requireTeacherSubscription = async (
       endDate: { $gt: now },
     });
 
-    if (!activeSubscription) {
+    if (!isUserPremium && !activeSubscription) {
       res.status(403).json({
         success: false,
         code: 'SUBSCRIPTION_REQUIRED',
         message:
-          'Active Teacher subscription required to create or host exams. Please subscribe to a Monthly or Yearly plan.',
+          'Active Teacher Premium subscription required to create or host exams. Please upgrade to Teacher Premium ($20/year).',
       });
       return;
     }
