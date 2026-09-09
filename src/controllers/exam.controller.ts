@@ -4,6 +4,31 @@ import { ExamPurchase } from '../models/exam-purchase.model';
 import { ExamSubmission } from '../models/exam-submission.model';
 import { UserSubscription } from '../models/subscription.model';
 
+// Helper to sanitize questions and prevent validation errors
+const sanitizeQuestionsList = (questions: any[]): any[] => {
+  if (!Array.isArray(questions)) return [];
+  return questions.map((q, idx) => {
+    const options = Array.isArray(q.options) ? q.options : [];
+    let correctOptionIndex = typeof q.correctOptionIndex === 'number' ? q.correctOptionIndex : 0;
+    if (q.correctAnswer && options.length > 0) {
+      const foundIdx = options.indexOf(q.correctAnswer);
+      if (foundIdx !== -1) {
+        correctOptionIndex = foundIdx;
+      }
+    }
+    return {
+      ...q,
+      id: String(q.id || q._id || ('q_' + idx + '_' + Date.now())),
+      questionText: q.questionText || 'Question text',
+      options,
+      correctOptionIndex,
+      marks: Number(q.marks) || 1,
+      explanation: q.explanation || '',
+    };
+  });
+};
+
+
 // 1. GET /api/exams/public - Guest/Public list of ALL Published exams (Free & Paid)
 export const getPublicExams = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -51,6 +76,12 @@ export const getPublicExams = async (req: Request, res: Response): Promise<void>
         teacherName: exam.teacherName,
         isPublished: exam.isPublished !== false,
         isUnlocked: exam.accessType === 'free',
+        joinCode: exam.joinCode,
+        accessToken: exam.accessToken,
+        startDateTime: exam.startDateTime,
+        endDateTime: exam.endDateTime,
+        status: exam.status,
+        subject: exam.subject || exam.category,
         questions: sanitizedQuestions,
       };
     });
@@ -186,6 +217,12 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
           duration: exam.durationMinutes,
           isUnlocked,
           isCompleted: submittedExamIds.has(examIdStr),
+          joinCode: exam.joinCode,
+          accessToken: exam.accessToken,
+          startDateTime: exam.startDateTime,
+          endDateTime: exam.endDateTime,
+          status: exam.status,
+          subject: exam.subject || exam.category,
         };
       });
 
@@ -226,8 +263,21 @@ export const getExamById = async (req: Request, res: Response): Promise<void> =>
   try {
     const { id } = req.params;
     const user = req.user;
+    const cleanId = (id || '').trim();
 
-    const exam = await Exam.findById(id);
+    let exam = null;
+    if (cleanId.match(/^[0-9a-fA-F]{24}$/)) {
+      exam = await Exam.findById(cleanId);
+    }
+    if (!exam) {
+      exam = await Exam.findOne({
+        $or: [
+          { joinCode: cleanId.toUpperCase() },
+          { joinCode: cleanId },
+          { accessToken: cleanId },
+        ],
+      });
+    }
     if (!exam) {
       res.status(404).json({
         success: false,
@@ -245,7 +295,7 @@ export const getExamById = async (req: Request, res: Response): Promise<void> =>
     const isCreatorOrAdmin = isCreator || isAdmin;
 
     // If draft/unpublished, only creator or admin can view
-    if (exam.isPublished === false && !isCreatorOrAdmin) {
+    if (exam.isPublished === false && (exam as any).status !== 'PUBLISHED' && !isCreatorOrAdmin) {
       res.status(404).json({
         success: false,
         code: 'NOT_FOUND',
@@ -268,6 +318,12 @@ export const getExamById = async (req: Request, res: Response): Promise<void> =>
     examData.id = exam._id.toString();
     examData.examId = exam._id.toString();
     examData.duration = exam.durationMinutes;
+    examData.joinCode = (exam as any).joinCode;
+    examData.accessToken = (exam as any).accessToken;
+    examData.startDateTime = (exam as any).startDateTime;
+    examData.endDateTime = (exam as any).endDateTime;
+    examData.subject = (exam as any).subject || exam.category;
+    examData.status = (exam as any).status || (exam.isPublished ? 'PUBLISHED' : 'DRAFT');
 
     if (!isCreatorOrAdmin && examData.questions) {
       examData.questions = examData.questions.map((q: any) => ({
@@ -303,6 +359,13 @@ export const createExam = async (req: Request, res: Response): Promise<void> => 
       title,
       description,
       category,
+      subject,
+      startDateTime,
+      endDateTime,
+      date,
+      joinCode,
+      accessToken,
+      status,
       accessType = 'free',
       price = 0,
       durationMinutes = 30,
@@ -324,7 +387,14 @@ export const createExam = async (req: Request, res: Response): Promise<void> => 
     const newExam = await Exam.create({
       title,
       description,
-      category,
+      category: category || subject || 'General',
+      subject: subject || category || 'General',
+      startDateTime,
+      endDateTime,
+      date: date || (startDateTime ? new Date(startDateTime).toLocaleString() : undefined),
+      joinCode: (joinCode || Math.random().toString(36).substring(2, 8)).toUpperCase(),
+      accessToken: accessToken || ('tst_' + Math.random().toString(36).substring(2, 12)),
+      status: status || 'PUBLISHED',
       teacherId: user.id,
       teacherName: user.name,
       teacherEmail: user.email,
@@ -333,7 +403,7 @@ export const createExam = async (req: Request, res: Response): Promise<void> => 
       durationMinutes: Number(durationMinutes) || 30,
       totalMarks: Number(totalMarks) || 100,
       passMarks: Number(passMarks) || 40,
-      questions,
+      questions: sanitizeQuestionsList(questions),
       isPublished: Boolean(isPublished),
     });
 
@@ -357,13 +427,72 @@ export const updateExam = async (req: Request, res: Response): Promise<void> => 
   try {
     const { id } = req.params;
     const user = req.user!;
+    const cleanId = (id || '').trim();
 
-    const exam = await Exam.findById(id);
+    let exam = null;
+    if (cleanId.match(/^[0-9a-fA-F]{24}$/)) {
+      exam = await Exam.findById(cleanId);
+    }
     if (!exam) {
-      res.status(404).json({
-        success: false,
-        code: 'NOT_FOUND',
-        message: 'Exam not found',
+      exam = await Exam.findOne({
+        $or: [
+          { joinCode: cleanId.toUpperCase() },
+          { joinCode: cleanId },
+          { accessToken: cleanId },
+        ],
+      });
+    }
+
+    // Upsert: If exam record not yet in MongoDB, create it now for the teacher
+    if (!exam) {
+      const {
+        title,
+        description,
+        category,
+        subject,
+        accessType,
+        price,
+        durationMinutes,
+        totalMarks,
+        passMarks,
+        questions,
+        isPublished,
+        startDateTime,
+        endDateTime,
+        date,
+        joinCode,
+        accessToken,
+        status,
+      } = req.body;
+
+      const created = await Exam.create({
+        _id: cleanId.match(/^[0-9a-fA-F]{24}$/) ? cleanId : undefined,
+        title: title || 'Examination Paper',
+        description: description || '',
+        category: category || subject || 'General',
+        subject: subject || category || 'General',
+        teacherId: user.id,
+        teacherName: user.name,
+        teacherEmail: user.email,
+        accessType: accessType || 'free',
+        price: Number(price) || 0,
+        durationMinutes: Number(durationMinutes) || 60,
+        totalMarks: Number(totalMarks) || 50,
+        passMarks: Number(passMarks) || 20,
+        questions: sanitizeQuestionsList(questions || []),
+        isPublished: isPublished !== undefined ? Boolean(isPublished) : (status === 'PUBLISHED'),
+        status: status || 'PUBLISHED',
+        joinCode: (joinCode || cleanId.length <= 10 ? cleanId : Math.random().toString(36).substring(2, 8)).toUpperCase(),
+        accessToken: accessToken || ('tst_' + Math.random().toString(36).substring(2, 12)),
+        startDateTime,
+        endDateTime,
+        date,
+      });
+
+      res.status(200).json({
+        success: true,
+        message: 'Exam upserted and saved successfully',
+        data: created,
       });
       return;
     }
@@ -397,6 +526,16 @@ export const updateExam = async (req: Request, res: Response): Promise<void> => 
     if (title !== undefined) exam.title = title;
     if (description !== undefined) exam.description = description;
     if (category !== undefined) exam.category = category;
+    if (req.body.subject !== undefined) (exam as any).subject = req.body.subject;
+    if (req.body.startDateTime !== undefined) (exam as any).startDateTime = req.body.startDateTime;
+    if (req.body.endDateTime !== undefined) (exam as any).endDateTime = req.body.endDateTime;
+    if (req.body.date !== undefined) (exam as any).date = req.body.date;
+    if (req.body.joinCode !== undefined) (exam as any).joinCode = req.body.joinCode;
+    if (req.body.accessToken !== undefined) (exam as any).accessToken = req.body.accessToken;
+    if (req.body.status !== undefined) {
+      (exam as any).status = req.body.status;
+      exam.isPublished = req.body.status === 'PUBLISHED';
+    }
     if (accessType !== undefined) exam.accessType = accessType;
     if (price !== undefined) {
       exam.price = accessType === 'paid' || exam.accessType === 'paid' ? Number(price) : 0;
@@ -404,7 +543,7 @@ export const updateExam = async (req: Request, res: Response): Promise<void> => 
     if (durationMinutes !== undefined) exam.durationMinutes = Number(durationMinutes);
     if (totalMarks !== undefined) exam.totalMarks = Number(totalMarks);
     if (passMarks !== undefined) exam.passMarks = Number(passMarks);
-    if (questions !== undefined) exam.questions = questions;
+    if (questions !== undefined) exam.questions = sanitizeQuestionsList(questions);
     if (isPublished !== undefined) exam.isPublished = Boolean(isPublished);
 
     await exam.save();
@@ -585,7 +724,19 @@ export const submitExam = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
-    const exam = await Exam.findById(id);
+    let exam = null;
+    if (id.match(/^[0-9a-fA-F]{24}$/)) {
+      exam = await Exam.findById(id);
+    }
+    if (!exam) {
+      exam = await Exam.findOne({
+        $or: [
+          { joinCode: id.toUpperCase() },
+          { joinCode: id },
+          { accessToken: id }
+        ]
+      });
+    }
     if (!exam) {
       res.status(404).json({
         success: false,
