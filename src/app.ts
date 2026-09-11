@@ -3,45 +3,111 @@ import cors from 'cors';
 import { toNodeHandler } from 'better-auth/node';
 import { auth } from './lib/auth';
 import { env } from './config/env';
+import { connectDB } from './config/db';
+import apiRoutes from './routes';
 
 const app: Application = express();
 
-// CORS configuration
+// Trust reverse proxy (Required for Render HTTPS load balancers)
+app.set('trust proxy', 1);
+
+// Normalize allowed origins (strip trailing slash)
+const allowedOrigins = env.allowed_origins.map((o) => o.replace(/\/+$/, ''));
+
+// Helper to check whether an incoming origin is permitted
+const isOriginAllowed = (origin: string): boolean => {
+  const normalized = origin.replace(/\/+$/, '');
+  if (allowedOrigins.includes(normalized)) {
+    return true;
+  }
+  // Allow localhost & 127.0.0.1 on any port in development
+  if (!env.is_production && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(normalized)) {
+    return true;
+  }
+  // Allow preview deployments on Vercel
+  if (/^https?:\/\/[a-zA-Z0-9-_]+\.vercel\.app$/.test(normalized)) {
+    return true;
+  }
+  return false;
+};
+
+// Dynamic CORS Configuration
 app.use(
   cors({
-    origin: [env.frontend_url, env.better_auth_url].filter(Boolean),
+    origin: (origin, callback) => {
+      // Allow requests with no origin (e.g. mobile apps, curl, server-to-server, health checks)
+      if (!origin) {
+        return callback(null, true);
+      }
+      if (isOriginAllowed(origin)) {
+        return callback(null, true);
+      }
+      console.warn(`[CORS] Blocked request from origin: ${origin}`);
+      return callback(new Error(`CORS policy: Origin ${origin} not allowed by Access-Control-Allow-Origin.`));
+    },
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Cookie', 'X-Requested-With', 'Accept'],
+    exposedHeaders: ['Set-Cookie'],
   })
 );
 
-// Body parsers
-app.use(express.json());
+// Auto-connect DB middleware for serverless/Vercel functions
+app.use(async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    await connectDB();
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Body parsers with rawBody preservation for Stripe webhook signature verification
+app.use(
+  express.json({
+    verify: (req: Request & { rawBody?: Buffer }, _res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
 app.use(express.urlencoded({ extended: true }));
 
 // Better Auth Route Handler
 app.all('/api/auth/*', toNodeHandler(auth));
 
-// Health Check Endpoint
-app.get('/api/health', (req: Request, res: Response) => {
+// Root Route
+app.get('/', (req: Request, res: Response) => {
+  res.status(200).send('Testify Server is running');
+});
+
+// API Health Check
+app.get('/', (req: Request, res: Response) => {
   res.status(200).json({
-    success: true,
-    message: 'Testify API is running',
+    status: 'ok',
+    message: 'Server is running',
+    environment: env.node_env,
   });
 });
+
+// App API Routes (/api/exams, /api/subscriptions)
+app.use('/api', apiRoutes);
 
 // 404 Handler
 app.use((req: Request, res: Response) => {
   res.status(404).json({
     success: false,
+    code: 'NOT_FOUND',
     message: 'Route Not Found',
   });
 });
 
 // Global Error Handler
-app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
   console.error('Unhandled Error:', err);
-  res.status(err.status || 500).json({
+  const status = err.status || err.statusCode || (err.message?.startsWith('CORS policy') ? 403 : 500);
+  res.status(status).json({
     success: false,
+    code: err.code || (status === 403 ? 'FORBIDDEN' : status === 404 ? 'NOT_FOUND' : 'INTERNAL_SERVER_ERROR'),
     message: err.message || 'Internal Server Error',
   });
 });
