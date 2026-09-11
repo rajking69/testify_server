@@ -4,6 +4,8 @@ import {
   getAllExams,
   getExamById,
   createExam,
+  updateExam,
+  deleteExam,
   purchaseExam,
   submitExam,
   getMySubmissions,
@@ -26,8 +28,10 @@ router.get('/', optionalAuth, getAllExams);
 router.get('/my/submissions', requireAuth, getMySubmissions);
 router.get('/:id', optionalAuth, getExamById);
 
-// Teacher Exam Creation (Requires Teacher Role + Active Subscription)
+// Teacher & Admin Exam Management
 router.post('/', requireAuth, requireRole('teacher', 'admin'), requireTeacherSubscription, createExam);
+router.patch('/:id', requireAuth, requireRole('teacher', 'admin'), updateExam);
+router.delete('/:id', requireAuth, requireRole('teacher', 'admin'), deleteExam);
 
 // Student Exam Purchase (One-time payment for paid/special exams)
 router.post('/:id/purchase', requireAuth, purchaseExam);
@@ -35,8 +39,11 @@ router.post('/:id/purchase', requireAuth, purchaseExam);
 // Student Exam Start & Submit (Requires Login + Free / Subscription / Purchase verification)
 router.post('/:id/start', requireAuth, requireExamAccess, async (req, res): Promise<void> => {
   const user = req.user!;
+  const exam = (req as any).exam;
+  const examId = exam?._id || req.params.id;
+
   const existing = await ExamSubmission.findOne({
-    examId: req.params.id,
+    examId,
     $or: [{ studentId: user.id }, { studentEmail: user.email }],
   });
 

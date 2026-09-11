@@ -1,4 +1,4 @@
-﻿import { Request, Response } from 'express';
+import { Request, Response } from 'express';
 import { Question, IQuestion } from '../models/question.model';
 import { validateQuestionPayload } from '../validations/question.validation';
 import { MAX_QUESTIONS_PER_EXAM } from '../config/question.constants';
@@ -71,9 +71,19 @@ export const createQuestion = async (req: Request, res: Response): Promise<void>
 export const getQuestions = async (req: Request, res: Response): Promise<void> => {
   try {
     const user = req.user!;
-    const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string, 10) || 20));
-    const skip = (page - 1) * limit;
+    const rawPage = req.query.page as string | undefined;
+    const rawLimit = req.query.limit as string | undefined;
+    const isAll = rawLimit === 'all' || rawLimit === '0' || (!rawLimit && !rawPage);
+
+    let page = 1;
+    let limit = 20;
+    let skip = 0;
+
+    if (!isAll) {
+      page = Math.max(1, parseInt(rawPage || '1', 10));
+      limit = Math.max(1, parseInt(rawLimit || '20', 10));
+      skip = (page - 1) * limit;
+    }
 
     const { search, category, subject, topic, difficulty, questionType, status, sort = 'newest' } = req.query;
 
@@ -84,14 +94,6 @@ export const getQuestions = async (req: Request, res: Response): Promise<void> =
       filter.createdBy = user.id;
     } else if (req.query.createdBy) {
       filter.createdBy = req.query.createdBy;
-    }
-
-    if (category || subject) {
-      const catVal = String(category || subject);
-      filter.$or = [
-        { category: { $regex: new RegExp(catVal, 'i') } },
-        { subject: { $regex: new RegExp(catVal, 'i') } },
-      ];
     }
 
     if (topic) {
@@ -110,15 +112,33 @@ export const getQuestions = async (req: Request, res: Response): Promise<void> =
       filter.status = String(status).toUpperCase();
     }
 
+    const andConditions: any[] = [];
+
+    if (category || subject) {
+      const catVal = String(category || subject);
+      andConditions.push({
+        $or: [
+          { category: { $regex: new RegExp(catVal, 'i') } },
+          { subject: { $regex: new RegExp(catVal, 'i') } },
+        ],
+      });
+    }
+
     if (search && String(search).trim()) {
       const searchRegex = new RegExp(String(search).trim(), 'i');
-      filter.$or = [
-        { questionText: searchRegex },
-        { category: searchRegex },
-        { subject: searchRegex },
-        { topic: searchRegex },
-        { tags: searchRegex },
-      ];
+      andConditions.push({
+        $or: [
+          { questionText: searchRegex },
+          { category: searchRegex },
+          { subject: searchRegex },
+          { topic: searchRegex },
+          { tags: searchRegex },
+        ],
+      });
+    }
+
+    if (andConditions.length > 0) {
+      filter.$and = andConditions;
     }
 
     // Sort order
@@ -142,22 +162,24 @@ export const getQuestions = async (req: Request, res: Response): Promise<void> =
         break;
     }
 
+    let questionsQuery = Question.find(filter).sort(sortObj);
+    if (!isAll) {
+      questionsQuery = questionsQuery.skip(skip).limit(limit);
+    }
+
     const [questions, total] = await Promise.all([
-      Question.find(filter)
-        .sort(sortObj)
-        .skip(skip)
-        .limit(limit),
+      questionsQuery,
       Question.countDocuments(filter),
     ]);
 
-    const totalPages = Math.ceil(total / limit) || 1;
+    const totalPages = isAll ? 1 : (Math.ceil(total / limit) || 1);
 
     res.status(200).json({
       success: true,
       message: 'Questions fetched successfully',
       count: questions.length,
       total,
-      page,
+      page: isAll ? 1 : page,
       totalPages,
       data: questions,
     });

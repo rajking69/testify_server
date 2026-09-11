@@ -74,7 +74,7 @@ export const getAllUsers = async (req: Request, res: Response): Promise<void> =>
 
     let userQuery = User.find(query).sort({ createdAt: -1 });
 
-    const isAll = limit === 'all' || limit === '0' || limit === 0 || (!limit && !page);
+    const isAll = limit === 'all' || limit === '0' || (!limit && !page);
     let pageNum = 1;
     let limitNum = total;
     let totalPages = 1;
