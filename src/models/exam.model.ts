@@ -36,6 +36,9 @@ export interface IExam extends Document {
   joinCode?: string;
   accessToken?: string;
   schedule?: IExamSchedule;
+  startDateTime?: string;
+  endDateTime?: string;
+  date?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -50,7 +53,7 @@ const questionSchema = new Schema<IQuestion>(
     marks: { type: Number, required: true, default: 1 },
     explanation: { type: String },
   },
-  { _id: false }
+  { _id: false, strict: false }
 );
 
 const examSchema = new Schema<IExam>(
@@ -82,10 +85,13 @@ const examSchema = new Schema<IExam>(
     passMarks: { type: Number, required: true, default: 40 },
     questions: [questionSchema],
     isPublished: { type: Boolean, default: true, index: true },
-    totalEnrolled: { type: Number, default: 0 },
-    completedCount: { type: Number, default: 0 },
     joinCode: { type: String, index: true },
     accessToken: { type: String, index: true },
+    startDateTime: { type: String },
+    endDateTime: { type: String },
+    date: { type: String },
+    totalEnrolled: { type: Number, default: 0 },
+    completedCount: { type: Number, default: 0 },
     schedule: {
       startWindow: { type: Date },
       endWindow: { type: Date },

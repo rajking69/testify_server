@@ -4,6 +4,7 @@ import User from '../models/user.model';
 import { UserSubscription } from '../models/subscription.model';
 import { Exam } from '../models/exam.model';
 import { ExamPurchase } from '../models/exam-purchase.model';
+import { ExamSubmission } from '../models/exam-submission.model';
 
 // Middleware to verify Teacher has an active subscription to create/host exams
 export const requireTeacherSubscription = async (
@@ -50,7 +51,9 @@ export const requireTeacherSubscription = async (
       endDate: { $gt: now },
     });
 
-    if (!isUserPremium && !activeSubscription) {
+    // Allow exam creation in non-production environments for development and testing
+    const isDev = process.env.NODE_ENV !== 'production';
+    if (!isDev && !isUserPremium && !activeSubscription) {
       res.status(403).json({
         success: false,
         code: 'SUBSCRIPTION_REQUIRED',
@@ -64,12 +67,13 @@ export const requireTeacherSubscription = async (
   } catch (error) {
     res.status(500).json({
       success: false,
+      code: 'INTERNAL_ERROR',
       message: 'Failed to verify subscription status.',
     });
   }
 };
 
-// Middleware to check if student has access to an exam (Free vs Paid vs Subscribed)
+// Middleware to check if student has access to attempt an exam (Free vs Paid vs Subscribed)
 export const requireExamAccess = async (
   req: Request,
   res: Response,
@@ -96,6 +100,7 @@ export const requireExamAccess = async (
     if (!exam) {
       res.status(404).json({
         success: false,
+        code: 'NOT_FOUND',
         message: 'Exam not found.',
       });
       return;
@@ -103,17 +108,42 @@ export const requireExamAccess = async (
 
     (req as any).exam = exam;
 
-    // Admin or Exam Creator Teacher has full access
-    if (user.role === 'admin' || (user.role === 'teacher' && exam.teacherId === user.id)) {
+    // Rule 1: Teachers cannot attempt exams under any circumstances
+    if (user.role === 'teacher') {
+      res.status(403).json({
+        success: false,
+        code: 'TEACHER_ATTEMPT_FORBIDDEN',
+        message: 'Teacher accounts are strictly forbidden from attempting examinations. Teachers can only create, manage, and preview their own exams.',
+      });
+      return;
+    }
+
+    // Rule 2: Single attempt per student account (Strict backend enforcement)
+    const existingSubmission = await ExamSubmission.findOne({
+      examId: exam._id,
+      $or: [{ studentId: user.id }, { studentEmail: user.email }],
+    });
+
+    if (existingSubmission) {
+      res.status(403).json({
+        success: false,
+        code: 'ALREADY_COMPLETED',
+        message: 'You have already attempted this examination. Only one attempt is permitted per account.',
+      });
+      return;
+    }
+
+    // Admin bypass for remaining checks (e.g. testing free/paid access)
+    if (user.role === 'admin') {
       return next();
     }
 
-    // Free Exam: Any logged-in student has access
-    if (exam.accessType === 'free') {
+    // Rule 3: Free Exam - Any logged-in student has access
+    if (exam.accessType === 'free' && (!exam.price || exam.price <= 0)) {
       return next();
     }
 
-    // Check if Student has active subscription (all-access)
+    // Rule 4: Paid Exam - Check active all-access student subscription
     const now = new Date();
     const activeStudentSubscription = await UserSubscription.findOne({
       userId: user.id,
@@ -126,31 +156,30 @@ export const requireExamAccess = async (
       return next();
     }
 
-    // If no all-access subscription, check if student made a direct one-time purchase
-    if (exam.accessType === 'paid') {
-      const purchase = await ExamPurchase.findOne({
-        studentId: user.id,
-        examId: exam._id,
-        status: 'completed',
-      });
+    // Rule 5: Check one-time purchase
+    const purchase = await ExamPurchase.findOne({
+      studentId: user.id,
+      examId: exam._id,
+      status: 'completed',
+    });
 
-      if (purchase) {
-        return next();
-      }
+    if (purchase) {
+      return next();
     }
 
-    // If neither active subscription nor purchase found
+    // If neither active subscription nor valid purchase found
     res.status(403).json({
       success: false,
-      code: 'PURCHASE_OR_SUBSCRIPTION_REQUIRED',
+      code: 'PURCHASE_REQUIRED',
       message:
-        'This is a special premium exam. Please purchase this exam or subscribe to a Student plan to participate.',
+        'This is a paid examination. Please purchase this exam or subscribe to a Student plan to participate.',
       price: exam.price,
       accessType: exam.accessType,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
+      code: 'INTERNAL_ERROR',
       message: 'Failed to verify exam access permission.',
     });
   }
