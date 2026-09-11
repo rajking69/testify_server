@@ -6,6 +6,7 @@ export interface CandidateTelemetry {
   studentId: string;
   name: string;
   email: string;
+  rollNo?: string;
   examId: string;
   examTitle: string;
   progress: number;
@@ -39,6 +40,7 @@ export function initMonitoringSocket(io: Server) {
       studentId?: string;
       name?: string;
       email?: string;
+      rollNo?: string;
       examId?: string;
       examTitle?: string;
       totalQuestions?: number;
@@ -63,6 +65,7 @@ export function initMonitoringSocket(io: Server) {
         studentId: data.studentId || candidateKey,
         name: data.name || existing?.name || 'Student Candidate',
         email: data.email || existing?.email || 'student@testify.local',
+        rollNo: data.rollNo || existing?.rollNo || '',
         examId: data.examId || existing?.examId || 'general',
         examTitle: data.examTitle || existing?.examTitle || 'Live Examination',
         progress: existing?.progress || 0,
