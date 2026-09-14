@@ -1,18 +1,24 @@
-import { betterAuth } from 'better-auth';
-import { mongodbAdapter } from 'better-auth/adapters/mongodb';
-import mongoose from 'mongoose';
-import { env } from '../config/env';
+import { betterAuth } from "better-auth";
+import { mongodbAdapter } from "better-auth/adapters/mongodb";
+import mongoose from "mongoose";
+import { emailOTP } from "better-auth/plugins";
+import { Resend } from "resend";
+import { env } from "../config/env";
 
 const dbProxy = new Proxy({} as any, {
   get(target, prop, receiver) {
     const db = mongoose.connection.db;
     if (!db) {
-      throw new Error('Database is not connected yet');
+      throw new Error("Database is not connected yet");
     }
     const val = Reflect.get(db, prop, receiver);
-    return typeof val === 'function' ? val.bind(db) : val;
+    return typeof val === "function" ? val.bind(db) : val;
   },
 });
+
+// Initialize Resend if API key is available
+const resend = env.resend_api_key ? new Resend(env.resend_api_key) : null;
+const fromEmail = env.resend_from_email;
 
 export const auth = betterAuth({
   database: mongodbAdapter(dbProxy),
@@ -42,10 +48,11 @@ export const auth = betterAuth({
   user: {
     additionalFields: {
       role: {
-        type: 'string',
+        type: ["student", "teacher", "admin"],
         required: false,
-        defaultValue: 'student',
-        input: true, // Allow role ('student' | 'teacher') during sign up
+        defaultValue: "student",
+        input: false,
+        returned: true,
       },
     },
   },

@@ -2,7 +2,8 @@ import { Schema, model, Document, Types } from 'mongoose';
 
 export interface ISubmissionAnswer {
   questionId: string;
-  selectedOptionIndex: number;
+  selectedOptionIndex?: number;
+  submittedAnswer?: string;
   isCorrect?: boolean;
   marksObtained?: number;
 }
@@ -26,7 +27,8 @@ export interface IExamSubmission extends Document {
 const submissionAnswerSchema = new Schema<ISubmissionAnswer>(
   {
     questionId: { type: String, required: true },
-    selectedOptionIndex: { type: Number, required: true },
+    selectedOptionIndex: { type: Number, default: 0 },
+    submittedAnswer: { type: String },
     isCorrect: { type: Boolean },
     marksObtained: { type: Number, default: 0 },
   },

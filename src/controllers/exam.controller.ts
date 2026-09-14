@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import mongoose from 'mongoose';
 import { Exam } from '../models/exam.model';
 import { ExamPurchase } from '../models/exam-purchase.model';
 import { ExamSubmission } from '../models/exam-submission.model';
@@ -38,7 +39,10 @@ export const getPublicExams = async (req: Request, res: Response): Promise<void>
     };
 
     if (category && category !== 'all' && category !== 'All') {
-      filter.category = new RegExp(`^${category}$`, 'i');
+      filter.$or = [
+        { category: new RegExp(`^${category}$`, 'i') },
+        { subject: new RegExp(`^${category}$`, 'i') },
+      ];
     }
 
     if (search) {
@@ -70,18 +74,22 @@ export const getPublicExams = async (req: Request, res: Response): Promise<void>
         durationMinutes: exam.durationMinutes,
         totalMarks: exam.totalMarks,
         passMarks: exam.passMarks,
+        passMark: exam.passMarks || Math.round((exam.totalMarks || 50) * 0.4),
         accessType: exam.accessType,
         price: exam.price || 0,
         teacherId: exam.teacherId,
         teacherName: exam.teacherName,
+        createdBy: exam.teacherName || 'Instructor',
         isPublished: exam.isPublished !== false,
         isUnlocked: exam.accessType === 'free',
+        enrolledCount: exam.totalEnrolled || 0,
+        completedCount: exam.completedCount || 0,
         joinCode: exam.joinCode,
         accessToken: exam.accessToken,
         startDateTime: exam.startDateTime,
         endDateTime: exam.endDateTime,
-        status: exam.status,
-        subject: exam.subject || exam.category,
+        status: exam.status || (exam.isPublished ? 'published' : 'draft'),
+        subject: exam.subject || exam.category || 'General',
         questions: sanitizedQuestions,
       };
     });
@@ -105,7 +113,7 @@ export const getPublicExams = async (req: Request, res: Response): Promise<void>
 export const getAllExams = async (req: Request, res: Response): Promise<void> => {
   try {
     const user = req.user;
-    const { category, accessType, teacherId, teacherEmail, mine, isPublished, search } = req.query;
+    const { category, subject, accessType, teacherId, teacherEmail, mine, isPublished, search } = req.query;
 
     const filter: any = {};
 
@@ -139,22 +147,28 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
       ];
     }
 
-    if (category && category !== 'all' && category !== 'All') {
-      filter.category = new RegExp(`^${category}$`, 'i');
+    const cat = category || subject;
+    if (cat && cat !== 'all' && cat !== 'All') {
+      const catRegex = new RegExp(`^${cat}$`, 'i');
+      filter.$and = filter.$and || [];
+      filter.$and.push({
+        $or: [{ category: catRegex }, { subject: catRegex }],
+      });
     }
 
     if (accessType && accessType !== 'all' && accessType !== 'All') {
-      filter.accessType = accessType;
+      filter.accessType = String(accessType).toLowerCase();
     }
 
     if (search) {
       const searchRegex = new RegExp(String(search), 'i');
-      const searchCond = [{ title: searchRegex }, { description: searchRegex }, { category: searchRegex }];
+      const searchOr = [{ title: searchRegex }, { description: searchRegex }, { category: searchRegex }, { subject: searchRegex }];
       if (filter.$or) {
-        filter.$and = [{ $or: filter.$or }, { $or: searchCond }];
+        filter.$and = filter.$and || [];
+        filter.$and.push({ $or: filter.$or }, { $or: searchOr });
         delete filter.$or;
       } else {
-        filter.$or = searchCond;
+        filter.$or = searchOr;
       }
     }
 
@@ -169,6 +183,13 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
         id: exam._id.toString(),
         examId: exam._id.toString(),
         duration: exam.durationMinutes,
+        subject: exam.subject || exam.category || 'General',
+        status: exam.status || (exam.isPublished ? 'published' : 'draft'),
+        createdBy: exam.teacherName || 'Instructor',
+        teacherName: exam.teacherName || 'Instructor',
+        enrolledCount: exam.totalEnrolled || 0,
+        completedCount: exam.completedCount || 0,
+        passMark: exam.passMarks || Math.round((exam.totalMarks || 50) * 0.4),
         isUnlocked: exam.accessType === 'free',
       }));
 
@@ -221,8 +242,13 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
           accessToken: exam.accessToken,
           startDateTime: exam.startDateTime,
           endDateTime: exam.endDateTime,
-          status: exam.status,
-          subject: exam.subject || exam.category,
+          status: exam.status || (exam.isPublished ? 'published' : 'draft'),
+          subject: exam.subject || exam.category || 'General',
+          createdBy: exam.teacherName || 'Instructor',
+          teacherName: exam.teacherName || 'Instructor',
+          enrolledCount: exam.totalEnrolled || 0,
+          completedCount: exam.completedCount || 0,
+          passMark: exam.passMarks || Math.round((exam.totalMarks || 50) * 0.4),
         };
       });
 
@@ -241,6 +267,13 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
       examId: exam._id.toString(),
       duration: exam.durationMinutes,
       isUnlocked: true,
+      subject: exam.subject || exam.category || 'General',
+      status: exam.status || (exam.isPublished ? 'published' : 'draft'),
+      createdBy: exam.teacherName || 'Instructor',
+      teacherName: exam.teacherName || 'Instructor',
+      enrolledCount: exam.totalEnrolled || 0,
+      completedCount: exam.completedCount || 0,
+      passMark: exam.passMarks || Math.round((exam.totalMarks || 50) * 0.4),
     }));
 
     res.status(200).json({
@@ -258,7 +291,7 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
   }
 };
 
-// 3. GET /api/exams/:id - View exam details
+// 3. GET /api/exams/:id - Get single exam details (supports ObjectId, joinCode, or accessToken)
 export const getExamById = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
@@ -266,7 +299,7 @@ export const getExamById = async (req: Request, res: Response): Promise<void> =>
     const cleanId = (id || '').trim();
 
     let exam = null;
-    if (cleanId.match(/^[0-9a-fA-F]{24}$/)) {
+    if (mongoose.isValidObjectId(cleanId)) {
       exam = await Exam.findById(cleanId);
     }
     if (!exam) {
@@ -322,9 +355,13 @@ export const getExamById = async (req: Request, res: Response): Promise<void> =>
     examData.accessToken = (exam as any).accessToken;
     examData.startDateTime = (exam as any).startDateTime;
     examData.endDateTime = (exam as any).endDateTime;
-    examData.subject = (exam as any).subject || exam.category;
-    examData.status = (exam as any).status || (exam.isPublished ? 'PUBLISHED' : 'DRAFT');
-
+    examData.subject = exam.subject || exam.category || 'General';
+    examData.status = exam.status || (exam.isPublished ? 'published' : 'draft');
+    examData.enrolledCount = exam.totalEnrolled || 0;
+    examData.completedCount = exam.completedCount || 0;
+    examData.passMark = exam.passMarks;
+    examData.teacherName = exam.teacherName;
+    examData.createdBy = exam.teacherName;
     if (!isCreatorOrAdmin && examData.questions) {
       examData.questions = examData.questions.map((q: any) => ({
         _id: q._id || q.id,
@@ -351,31 +388,34 @@ export const getExamById = async (req: Request, res: Response): Promise<void> =>
   }
 };
 
-// 4. POST /api/exams - Create exam (Teacher with Active Subscription)
+// 4. POST /api/exams - Create exam (Teacher with Active Subscription or Admin)
 export const createExam = async (req: Request, res: Response): Promise<void> => {
   try {
     const user = req.user!;
     const {
       title,
-      description,
-      category,
+      description = '',
+      category = 'General',
       subject,
       startDateTime,
       endDateTime,
       date,
-      joinCode,
-      accessToken,
-      status,
       accessType = 'free',
+      status = 'published',
       price = 0,
       durationMinutes = 30,
       totalMarks = 100,
-      passMarks = 40,
+      passMarks,
+      passMark,
+      passPercentage = 40,
       questions = [],
-      isPublished = true,
+      isPublished,
+      joinCode,
+      accessToken,
+      schedule,
     } = req.body;
 
-    if (!title) {
+    if (!title || !title.trim()) {
       res.status(400).json({
         success: false,
         code: 'INVALID_INPUT',
@@ -384,27 +424,47 @@ export const createExam = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
+    const chosenAccessType = String(accessType || 'free').toLowerCase() as 'free' | 'paid' | 'subscription_only';
+    const chosenStatus = String(status || 'published').toLowerCase() as 'draft' | 'published' | 'scheduled';
+    const computedIsPublished = isPublished !== undefined ? Boolean(isPublished) : chosenStatus !== 'draft';
+    const totalM = Number(totalMarks) || 100;
+    const computedPassMarks = Number(passMarks || passMark || Math.round((totalM * (Number(passPercentage) || 40)) / 100)) || 40;
+    const chosenSubject = String(subject || category || 'General').trim();
+
+    const formattedQuestions = Array.isArray(questions)
+      ? questions.map((q: any, idx: number) => ({
+          id: String(q.id || q._id || `q_${Date.now()}_${idx}`),
+          questionText: q.questionText || q.question || '',
+          options: Array.isArray(q.options) ? q.options : [],
+          correctOptionIndex: typeof q.correctOptionIndex === 'number' ? q.correctOptionIndex : 0,
+          correctAnswer: String(q.correctAnswer || ''),
+          marks: Number(q.marks) || 1,
+          explanation: q.explanation || '',
+        }))
+      : [];
+
     const newExam = await Exam.create({
-      title,
-      description,
-      category: category || subject || 'General',
-      subject: subject || category || 'General',
+      title: title.trim(),
+      description: description.trim(),
+      category: chosenSubject,
+      subject: chosenSubject,
       startDateTime,
       endDateTime,
       date: date || (startDateTime ? new Date(startDateTime).toLocaleString() : undefined),
       joinCode: (joinCode || Math.random().toString(36).substring(2, 8)).toUpperCase(),
       accessToken: accessToken || ('tst_' + Math.random().toString(36).substring(2, 12)),
-      status: status || 'PUBLISHED',
       teacherId: user.id,
-      teacherName: user.name,
+      teacherName: user.name || 'Instructor',
       teacherEmail: user.email,
-      accessType,
-      price: accessType === 'paid' ? Number(price) : 0,
+      accessType: chosenAccessType,
+      status: chosenStatus,
+      price: chosenAccessType === 'paid' ? Number(price) || 0 : 0,
       durationMinutes: Number(durationMinutes) || 30,
-      totalMarks: Number(totalMarks) || 100,
-      passMarks: Number(passMarks) || 40,
-      questions: sanitizeQuestionsList(questions),
-      isPublished: Boolean(isPublished),
+      totalMarks: totalM,
+      passMarks: computedPassMarks,
+      questions: formattedQuestions,
+      isPublished: computedIsPublished,
+      schedule: schedule || undefined,
     });
 
     res.status(201).json({
@@ -430,7 +490,7 @@ export const updateExam = async (req: Request, res: Response): Promise<void> => 
     const cleanId = (id || '').trim();
 
     let exam = null;
-    if (cleanId.match(/^[0-9a-fA-F]{24}$/)) {
+    if (mongoose.isValidObjectId(cleanId)) {
       exam = await Exam.findById(cleanId);
     }
     if (!exam) {
@@ -463,10 +523,23 @@ export const updateExam = async (req: Request, res: Response): Promise<void> => 
         joinCode,
         accessToken,
         status,
+        schedule,
       } = req.body;
 
+      const formattedQuestions = Array.isArray(questions)
+        ? questions.map((q: any, idx: number) => ({
+            id: String(q.id || q._id || `q_${Date.now()}_${idx}`),
+            questionText: q.questionText || q.question || '',
+            options: Array.isArray(q.options) ? q.options : [],
+            correctOptionIndex: typeof q.correctOptionIndex === 'number' ? q.correctOptionIndex : 0,
+            correctAnswer: String(q.correctAnswer || ''),
+            marks: Number(q.marks) || 1,
+            explanation: q.explanation || '',
+          }))
+        : [];
+
       const created = await Exam.create({
-        _id: cleanId.match(/^[0-9a-fA-F]{24}$/) ? cleanId : undefined,
+        _id: mongoose.isValidObjectId(cleanId) ? cleanId : undefined,
         title: title || 'Examination Paper',
         description: description || '',
         category: category || subject || 'General',
@@ -479,14 +552,15 @@ export const updateExam = async (req: Request, res: Response): Promise<void> => 
         durationMinutes: Number(durationMinutes) || 60,
         totalMarks: Number(totalMarks) || 50,
         passMarks: Number(passMarks) || 20,
-        questions: sanitizeQuestionsList(questions || []),
+        questions: formattedQuestions,
         isPublished: isPublished !== undefined ? Boolean(isPublished) : (status === 'PUBLISHED'),
         status: status || 'PUBLISHED',
-        joinCode: (joinCode || cleanId.length <= 10 ? cleanId : Math.random().toString(36).substring(2, 8)).toUpperCase(),
+        joinCode: (joinCode || (cleanId.length <= 10 ? cleanId : Math.random().toString(36).substring(2, 8))).toUpperCase(),
         accessToken: accessToken || ('tst_' + Math.random().toString(36).substring(2, 12)),
         startDateTime,
         endDateTime,
         date,
+        schedule,
       });
 
       res.status(200).json({
@@ -514,37 +588,71 @@ export const updateExam = async (req: Request, res: Response): Promise<void> => 
       title,
       description,
       category,
+      subject,
       accessType,
+      status,
       price,
       durationMinutes,
       totalMarks,
       passMarks,
+      passMark,
+      passPercentage,
       questions,
       isPublished,
+      joinCode,
+      accessToken,
+      schedule,
+      startDateTime,
+      endDateTime,
+      date,
     } = req.body;
 
-    if (title !== undefined) exam.title = title;
-    if (description !== undefined) exam.description = description;
-    if (category !== undefined) exam.category = category;
-    if (req.body.subject !== undefined) (exam as any).subject = req.body.subject;
-    if (req.body.startDateTime !== undefined) (exam as any).startDateTime = req.body.startDateTime;
-    if (req.body.endDateTime !== undefined) (exam as any).endDateTime = req.body.endDateTime;
-    if (req.body.date !== undefined) (exam as any).date = req.body.date;
-    if (req.body.joinCode !== undefined) (exam as any).joinCode = req.body.joinCode;
-    if (req.body.accessToken !== undefined) (exam as any).accessToken = req.body.accessToken;
-    if (req.body.status !== undefined) {
-      (exam as any).status = req.body.status;
-      exam.isPublished = req.body.status === 'PUBLISHED';
+    if (title !== undefined) exam.title = String(title).trim();
+    if (description !== undefined) exam.description = String(description).trim();
+    if (subject !== undefined || category !== undefined) {
+      const s = String(subject || category || exam.subject || exam.category).trim();
+      exam.subject = s;
+      exam.category = s;
     }
-    if (accessType !== undefined) exam.accessType = accessType;
-    if (price !== undefined) {
-      exam.price = accessType === 'paid' || exam.accessType === 'paid' ? Number(price) : 0;
+    if (accessType !== undefined) {
+      const a = String(accessType).toLowerCase() as 'free' | 'paid' | 'subscription_only';
+      exam.accessType = a;
+      if (a !== 'paid') exam.price = 0;
     }
-    if (durationMinutes !== undefined) exam.durationMinutes = Number(durationMinutes);
-    if (totalMarks !== undefined) exam.totalMarks = Number(totalMarks);
-    if (passMarks !== undefined) exam.passMarks = Number(passMarks);
-    if (questions !== undefined) exam.questions = sanitizeQuestionsList(questions);
-    if (isPublished !== undefined) exam.isPublished = Boolean(isPublished);
+    if (price !== undefined && exam.accessType === 'paid') {
+      exam.price = Number(price) || 0;
+    }
+    if (durationMinutes !== undefined) exam.durationMinutes = Number(durationMinutes) || 30;
+    if (totalMarks !== undefined) exam.totalMarks = Number(totalMarks) || 100;
+    if (passMarks !== undefined || passMark !== undefined || passPercentage !== undefined) {
+      exam.passMarks = Number(passMarks || passMark || Math.round((exam.totalMarks * (Number(passPercentage) || 40)) / 100)) || 40;
+    }
+    if (status !== undefined) {
+      const st = String(status).toLowerCase() as 'draft' | 'published' | 'scheduled';
+      exam.status = st;
+      exam.isPublished = st !== 'draft';
+    } else if (isPublished !== undefined) {
+      exam.isPublished = Boolean(isPublished);
+      exam.status = exam.isPublished ? 'published' : 'draft';
+    }
+    if (joinCode !== undefined) exam.joinCode = joinCode;
+    if (accessToken !== undefined) exam.accessToken = accessToken;
+    if (startDateTime !== undefined) (exam as any).startDateTime = startDateTime;
+    if (endDateTime !== undefined) (exam as any).endDateTime = endDateTime;
+    if (date !== undefined) (exam as any).date = date;
+    if (schedule !== undefined) exam.schedule = schedule;
+
+    if (Array.isArray(questions)) {
+      exam.questions = questions.map((q: any, idx: number) => ({
+        id: String(q.id || q._id || `q_${Date.now()}_${idx}`),
+        questionText: q.questionText || q.question || '',
+        options: Array.isArray(q.options) ? q.options : [],
+        correctOptionIndex: typeof q.correctOptionIndex === 'number' ? q.correctOptionIndex : 0,
+        correctAnswer: String(q.correctAnswer || ''),
+        marks: Number(q.marks) || 1,
+        explanation: q.explanation || '',
+      }));
+    }
 
     await exam.save();
 
@@ -597,6 +705,7 @@ export const deleteExam = async (req: Request, res: Response): Promise<void> => 
     res.status(200).json({
       success: true,
       message: 'Exam deleted successfully',
+      data: { id },
     });
   } catch (error) {
     res.status(500).json({
@@ -724,17 +833,17 @@ export const submitExam = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
+    const cleanId = (id || '').trim();
     let exam = null;
-    if (id.match(/^[0-9a-fA-F]{24}$/)) {
-      exam = await Exam.findById(id);
+    if (mongoose.isValidObjectId(cleanId)) {
+      exam = await Exam.findById(cleanId);
     }
     if (!exam) {
       exam = await Exam.findOne({
         $or: [
-          { joinCode: id.toUpperCase() },
-          { joinCode: id },
-          { accessToken: id }
-        ]
+          { joinCode: new RegExp(`^${cleanId}$`, 'i') },
+          { accessToken: cleanId },
+        ],
       });
     }
     if (!exam) {
@@ -763,18 +872,40 @@ export const submitExam = async (req: Request, res: Response): Promise<void> => 
 
     // Evaluate answers
     let score = 0;
-    const evaluatedAnswers = answers.map((ans: { questionId: string; selectedOptionIndex?: number; submittedAnswer?: any }) => {
-      const q = exam.questions.find(
-        (quest) => quest.id === ans.questionId || (quest as any)._id?.toString() === ans.questionId
-      );
-      const selectedIndex = ans.selectedOptionIndex !== undefined ? ans.selectedOptionIndex : Number(ans.submittedAnswer);
-      const isCorrect = q ? q.correctOptionIndex === selectedIndex : false;
+    const evaluatedAnswers = answers.map((ans: any) => {
+      const q = exam.questions.find((quest) => quest.id === ans.questionId || (quest as any)._id?.toString() === ans.questionId);
+
+      let selectedIdx = typeof ans.selectedOptionIndex === 'number' ? ans.selectedOptionIndex : -1;
+      if (selectedIdx === -1 && ans.submittedAnswer !== undefined) {
+        const num = Number(ans.submittedAnswer);
+        if (!isNaN(num) && num >= 0) {
+          selectedIdx = num;
+        } else if (q && Array.isArray(q.options)) {
+          selectedIdx = q.options.findIndex((opt) => opt.trim().toLowerCase() === String(ans.submittedAnswer).trim().toLowerCase());
+        }
+      }
+
+      let isCorrect = false;
+      if (q) {
+        if (q.correctOptionIndex !== undefined && selectedIdx >= 0 && q.correctOptionIndex === selectedIdx) {
+          isCorrect = true;
+        } else if (q.correctAnswer && ans.submittedAnswer && String(q.correctAnswer).trim().toLowerCase() === String(ans.submittedAnswer).trim().toLowerCase()) {
+          isCorrect = true;
+        } else if (q.correctOptionIndex !== undefined && q.options && q.options[q.correctOptionIndex]) {
+          const correctText = String(q.options[q.correctOptionIndex]).trim().toLowerCase();
+          if (ans.submittedAnswer && String(ans.submittedAnswer).trim().toLowerCase() === correctText) {
+            isCorrect = true;
+          }
+        }
+      }
+
       const marksObtained = isCorrect ? (q?.marks || 1) : 0;
       score += marksObtained;
 
       return {
-        questionId: ans.questionId,
-        selectedOptionIndex: selectedIndex,
+        questionId: String(ans.questionId),
+        selectedOptionIndex: Math.max(0, selectedIdx),
+        submittedAnswer: ans.submittedAnswer !== undefined ? String(ans.submittedAnswer) : (q?.options?.[selectedIdx] || ''),
         isCorrect,
         marksObtained,
       };
@@ -793,9 +924,16 @@ export const submitExam = async (req: Request, res: Response): Promise<void> => 
       totalMarks: exam.totalMarks,
       percentage: Number(percentage.toFixed(2)),
       isPassed,
-      timeTakenSeconds,
+      timeTakenSeconds: Number(timeTakenSeconds) || 0,
       submittedAt: new Date(),
     });
+
+    // Increment completed count and enrollments
+    const incObj: any = { completedCount: 1 };
+    if (exam.accessType === 'free') {
+      incObj.totalEnrolled = 1;
+    }
+    await Exam.findByIdAndUpdate(exam._id, { $inc: incObj });
 
     res.status(200).json({
       success: true,
@@ -824,8 +962,10 @@ export const submitExam = async (req: Request, res: Response): Promise<void> => 
 export const getMySubmissions = async (req: Request, res: Response): Promise<void> => {
   try {
     const user = req.user!;
-    const submissions = await ExamSubmission.find({ studentId: user.id })
-      .populate('examId', 'title category totalMarks passMarks accessType')
+    const submissions = await ExamSubmission.find({
+      $or: [{ studentId: user.id }, { studentEmail: user.email }],
+    })
+      .populate('examId', 'title category subject totalMarks passMarks accessType')
       .sort({ submittedAt: -1 });
 
     res.status(200).json({

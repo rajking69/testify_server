@@ -28,17 +28,15 @@ router.get('/my/submissions', requireAuth, getMySubmissions);
 router.get('/my/purchases', requireAuth, getMyPurchases);
 router.get('/:id', optionalAuth, getExamById);
 
-// Teacher Exam Creation (Requires Teacher Role + Active Subscription)
+// Teacher & Admin Exam Management
 router.post('/', requireAuth, requireRole('teacher', 'admin'), requireTeacherSubscription, createExam);
-
-// Teacher Exam Update & Delete (Enforces Teacher Ownership or Admin)
 router.patch('/:id', requireAuth, requireRole('teacher', 'admin'), updateExam);
 router.delete('/:id', requireAuth, requireRole('teacher', 'admin'), deleteExam);
 
 // Student Exam Purchase (One-time payment for paid/special exams; forbidden for teachers)
 router.post('/:id/purchase', requireAuth, purchaseExam);
 
-// Student Exam Start & Submit (Enforces Student role, 1 attempt limit, and purchase/subscription check)
+// Student Exam Start & Submit (Enforces Student role, 1 attempt limit, and purchase/subscription check via requireExamAccess)
 router.post('/:id/start', requireAuth, requireExamAccess, async (req, res): Promise<void> => {
   res.status(200).json({
     success: true,

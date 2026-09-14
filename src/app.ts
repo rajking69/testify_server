@@ -81,7 +81,7 @@ app.get('/', (req: Request, res: Response) => {
 });
 
 // API Health Check
-app.get('/api/health', (req: Request, res: Response) => {
+app.get('/', (req: Request, res: Response) => {
   res.status(200).json({
     status: 'ok',
     message: 'Server is running',

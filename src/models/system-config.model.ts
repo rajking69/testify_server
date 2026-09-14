@@ -17,7 +17,7 @@ const SystemConfigSchema: Schema = new Schema(
     value: { type: String, required: true },
     category: {
       type: String,
-      enum: ['general', 'auth', 'exam', 'payment', 'notification'],
+      enum: ['general', 'auth', 'exam', 'payment', 'notification', 'email', 'security', 'limits'],
       default: 'general',
     },
     description: { type: String, required: true },

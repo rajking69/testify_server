@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { Request, Response, NextFunction } from 'express';
 import User from '../models/user.model';
 import { UserSubscription } from '../models/subscription.model';
@@ -91,7 +92,11 @@ export const requireExamAccess = async (
       return;
     }
 
-    const exam = await Exam.findById(id);
+    const isValidId = mongoose.isValidObjectId(id);
+    const exam = isValidId
+      ? await Exam.findById(id)
+      : await Exam.findOne({ $or: [{ joinCode: new RegExp(`^${id}$`, 'i') }, { accessToken: id }] });
+
     if (!exam) {
       res.status(404).json({
         success: false,
@@ -100,6 +105,8 @@ export const requireExamAccess = async (
       });
       return;
     }
+
+    (req as any).exam = exam;
 
     // Rule 1: Teachers cannot attempt exams under any circumstances
     if (user.role === 'teacher') {
