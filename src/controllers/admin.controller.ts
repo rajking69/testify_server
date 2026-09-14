@@ -1,3 +1,4 @@
+import { Question } from '../models/question.model';
 import { Request, Response } from 'express';
 import mongoose from 'mongoose';
 import os from 'os';
@@ -12,14 +13,31 @@ import SystemConfig from '../models/system-config.model';
 // Admin Dashboard Overview
 export const getDashboardOverview = async (req: Request, res: Response): Promise<void> => {
   try {
-    const [totalUsers, totalExams, totalSubmissions, totalPurchases] = await Promise.all([
+    const [totalUsers, totalExams, totalSubmissions, totalPurchases, purchaseRevAgg, subRevAgg] = await Promise.all([
       User.countDocuments(),
       Exam.countDocuments(),
       ExamSubmission.countDocuments(),
       ExamPurchase.countDocuments(),
+      ExamPurchase.aggregate([
+        { $match: { status: 'completed' } },
+        { $group: { _id: null, total: { $sum: '$pricePaid' } } },
+      ]),
+      UserSubscription.aggregate([
+        { $match: { status: 'active' } },
+        { $group: { _id: null, total: { $sum: '$pricePaid' } } },
+      ]),
     ]);
 
     const activeSubscriptions = await UserSubscription.countDocuments({ status: 'active' });
+    const purchaseRevenue = purchaseRevAgg[0]?.total || 0;
+    const subscriptionRevenue = subRevAgg[0]?.total || 0;
+    const totalRevenue = purchaseRevenue + subscriptionRevenue;
+
+    // Platform fee calculations: 15% commission on exam sales + 100% of teacher subscriptions
+    const platformFeeRate = 15; // 15% platform commission
+    const platformFeeFromPurchases = Number((purchaseRevenue * (platformFeeRate / 100)).toFixed(2));
+    const platformFeeFromSubscriptions = subscriptionRevenue;
+    const totalPlatformFee = Number((platformFeeFromPurchases + platformFeeFromSubscriptions).toFixed(2));
 
     res.status(200).json({
       success: true,
@@ -29,6 +47,13 @@ export const getDashboardOverview = async (req: Request, res: Response): Promise
         totalSubmissions,
         totalPurchases,
         activeSubscriptions,
+        totalRevenue,
+        purchaseRevenue,
+        subscriptionRevenue,
+        platformFeeRate,
+        platformFeeFromPurchases,
+        platformFeeFromSubscriptions,
+        totalPlatformFee,
       },
     });
   } catch (error: unknown) {
