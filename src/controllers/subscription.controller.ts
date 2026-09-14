@@ -4,14 +4,14 @@ import { UserSubscription } from '../models/subscription.model';
 
 // Seed default plans if collection is empty
 const seedDefaultPlans = async () => {
-  const count = await SubscriptionPlan.countDocuments();
+  const count = await SubscriptionPlan.countDocuments({ targetRole: 'teacher' });
   if (count === 0) {
     await SubscriptionPlan.create([
       {
         name: 'Teacher Monthly Pro',
         targetRole: 'teacher',
         interval: 'monthly',
-        price: 499, // e.g. ৳499 / $9.99
+        price: 19.99,
         durationDays: 30,
         features: [
           'Create & Host Unlimited Exams',
@@ -25,39 +25,13 @@ const seedDefaultPlans = async () => {
         name: 'Teacher Yearly Elite',
         targetRole: 'teacher',
         interval: 'yearly',
-        price: 4999, // 2 months free
+        price: 199.99,
         durationDays: 365,
         features: [
           'All Monthly Pro Features',
           'Priority Teacher Support',
           'Custom Exam Branding',
           'Bulk Student Invite & Export',
-        ],
-        isActive: true,
-      },
-      {
-        name: 'Student Monthly All-Access',
-        targetRole: 'student',
-        interval: 'monthly',
-        price: 199,
-        durationDays: 30,
-        features: [
-          'Unlimited Access to All Special & Premium Exams',
-          'Detailed Performance Reports',
-          'Leaderboard Ranking',
-        ],
-        isActive: true,
-      },
-      {
-        name: 'Student Yearly All-Access',
-        targetRole: 'student',
-        interval: 'yearly',
-        price: 1899,
-        durationDays: 365,
-        features: [
-          'All Student Monthly Features',
-          'Full Year Unlimited Exam Access',
-          'Certificate of Completion',
         ],
         isActive: true,
       },
@@ -116,7 +90,7 @@ export const getMySubscription = async (req: Request, res: Response): Promise<vo
   }
 };
 
-// 3. POST /api/subscriptions/subscribe - Subscribe to a plan
+// 3. POST /api/subscriptions/subscribe - Subscribe to a plan (with strict active sub check)
 export const subscribePlan = async (req: Request, res: Response): Promise<void> => {
   try {
     const user = req.user!;
@@ -133,16 +107,26 @@ export const subscribePlan = async (req: Request, res: Response): Promise<void> 
       return;
     }
 
+    const now = new Date();
+    const activeSub = await UserSubscription.findOne({
+      userId: user.id,
+      status: 'active',
+      endDate: { $gt: now },
+    });
+
+    if (activeSub) {
+      const expiryFormatted = new Date(activeSub.endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      res.status(400).json({
+        success: false,
+        code: 'ALREADY_SUBSCRIBED',
+        message: `Subscription already active! Your current plan is valid until ${expiryFormatted}. You cannot renew or purchase a new subscription until it expires.`,
+      });
+      return;
+    }
+
     const startDate = new Date();
     const endDate = new Date(startDate.getTime() + plan.durationDays * 24 * 60 * 60 * 1000);
 
-    // Expire any existing active subscriptions for this user
-    await UserSubscription.updateMany(
-      { userId: user.id, status: 'active' },
-      { status: 'expired' }
-    );
-
-    // Create new active subscription
     const newSubscription = await UserSubscription.create({
       userId: user.id,
       userEmail: user.email,
@@ -169,5 +153,124 @@ export const subscribePlan = async (req: Request, res: Response): Promise<void> 
       message: 'Failed to create subscription',
       error: error instanceof Error ? error.message : error,
     });
+  }
+};
+
+// --- ADMIN SUBSCRIPTION PLAN MANAGEMENT ---
+
+// 4. GET /api/subscriptions/admin/all-plans - Admin list all plans (active & inactive)
+export const getAllPlansAdmin = async (req: Request, res: Response): Promise<void> => {
+  try {
+    await seedDefaultPlans();
+    const plans = await SubscriptionPlan.find().sort({ targetRole: 1, price: 1 });
+    res.status(200).json({ success: true, count: plans.length, data: plans });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to fetch admin subscription plans', error });
+  }
+};
+
+// 5. POST /api/subscriptions/admin/plans - Create a new plan
+export const createPlanAdmin = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { name, targetRole, interval, price, durationDays, features, isActive } = req.body;
+
+    if (!name || !targetRole || !interval || price === undefined) {
+      res.status(400).json({ success: false, message: 'name, targetRole, interval, and price are required' });
+      return;
+    }
+
+    const newPlan = await SubscriptionPlan.create({
+      name,
+      targetRole,
+      interval,
+      price: Number(price),
+      durationDays: durationDays ? Number(durationDays) : (interval === 'yearly' ? 365 : 30),
+      features: Array.isArray(features) ? features : (features ? String(features).split(',').map(s => s.trim()) : []),
+      isActive: isActive !== undefined ? Boolean(isActive) : true,
+    });
+
+    res.status(201).json({ success: true, message: 'Subscription plan created successfully', data: newPlan });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to create plan', error: error instanceof Error ? error.message : error });
+  }
+};
+
+// 6. PUT /api/subscriptions/admin/plans/:id - Update an existing plan
+export const updatePlanAdmin = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const { name, targetRole, interval, price, durationDays, features, isActive } = req.body;
+
+    const updateFields: any = {};
+    if (name !== undefined) updateFields.name = name;
+    if (targetRole !== undefined) updateFields.targetRole = targetRole;
+    if (interval !== undefined) updateFields.interval = interval;
+    if (price !== undefined) updateFields.price = Number(price);
+    if (durationDays !== undefined) updateFields.durationDays = Number(durationDays);
+    if (features !== undefined) {
+      updateFields.features = Array.isArray(features) ? features : String(features).split(',').map(s => s.trim());
+    }
+    if (isActive !== undefined) updateFields.isActive = Boolean(isActive);
+
+    const updatedPlan = await SubscriptionPlan.findByIdAndUpdate(id, updateFields, { new: true });
+    if (!updatedPlan) {
+      res.status(404).json({ success: false, message: 'Subscription plan not found' });
+      return;
+    }
+
+    res.status(200).json({ success: true, message: 'Subscription plan updated successfully', data: updatedPlan });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to update plan', error: error instanceof Error ? error.message : error });
+  }
+};
+
+// 7. DELETE /api/subscriptions/admin/plans/:id - Delete a plan
+export const deletePlanAdmin = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const plan = await SubscriptionPlan.findByIdAndDelete(id);
+    if (!plan) {
+      res.status(404).json({ success: false, message: 'Subscription plan not found' });
+      return;
+    }
+    res.status(200).json({ success: true, message: 'Subscription plan deleted successfully', data: { id } });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to delete plan', error: error instanceof Error ? error.message : error });
+  }
+};
+
+// 8. GET /api/subscriptions/admin/overview - Detailed user subscription analytics & active list
+export const getSubscriptionAdminOverview = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const [totalSubscribers, activeSubscriptions, plans, allUserSubscriptions] = await Promise.all([
+      UserSubscription.countDocuments(),
+      UserSubscription.find({ status: 'active' }).sort({ createdAt: -1 }),
+      SubscriptionPlan.find(),
+      UserSubscription.find().sort({ createdAt: -1 }),
+    ]);
+
+    const activeCount = activeSubscriptions.length;
+    const monthlyRevenue = activeSubscriptions.reduce((acc, sub) => acc + (sub.pricePaid || 0), 0);
+
+    const proCount = activeSubscriptions.filter(s => s.planName?.toLowerCase().includes('pro') || s.role === 'teacher').length;
+    const freeCount = Math.max(0, totalSubscribers - activeCount);
+    const institutionalCount = activeSubscriptions.filter(s => s.planName?.toLowerCase().includes('institutional') || s.planName?.toLowerCase().includes('elite')).length;
+
+    res.status(200).json({
+      success: true,
+      stats: {
+        total: totalSubscribers || allUserSubscriptions.length,
+        active: activeCount,
+        pro: proCount,
+        free: freeCount,
+        institutional: institutionalCount,
+        monthlyRevenue,
+        activePlansCount: plans.filter(p => p.isActive).length,
+      },
+      plans,
+      subscriptions: allUserSubscriptions,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to fetch admin subscription overview', error });
   }
 };

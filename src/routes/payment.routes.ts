@@ -5,13 +5,14 @@ import {
   getTeacherPremiumStatus,
   getTeacherRevenue,
   handleStripeWebhook,
+  getCheckoutSessionDetails,
 } from '../controllers/payment.controller';
 
 const router = Router();
 
 // 1. Teacher Premium Stripe Checkout
 router.post(
-  '/teacher/premium/checkout',
+  ['/teacher/premium/checkout', '/teacher-premium/checkout'],
   requireAuth,
   requireRole('teacher', 'admin'),
   createTeacherPremiumCheckout
@@ -27,8 +28,10 @@ router.get(
 // 3. Stripe Webhook
 router.post('/stripe/webhook', handleStripeWebhook);
 
+// 4. Session details
+router.get('/session/:sessionId', getCheckoutSessionDetails);
 
-// 4. Teacher Revenue & Sales Analytics Endpoint
+// 5. Teacher Revenue & Sales Analytics Endpoint
 router.get(
   '/teacher/revenue',
   requireAuth,

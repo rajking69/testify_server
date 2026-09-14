@@ -95,24 +95,34 @@ export const getOrCreateTeacherPremiumPriceId = async (): Promise<string> => {
 };
 
 /**
- * Creates a Stripe Checkout Session for Teacher Premium ($20/year subscription).
+ * Creates a dynamic Stripe Checkout Session for Teacher Premium plans (Monthly $19.99/mo, Yearly $199.99/yr, or custom Admin price).
  */
 export const createTeacherPremiumCheckoutSession = async ({
   teacherId,
   teacherEmail,
   teacherName,
+  priceAmount = 19.99,
+  interval = 'month',
+  planName = 'Testify Teacher Pro',
+  planId,
   successUrl,
   cancelUrl,
 }: {
   teacherId: string;
   teacherEmail: string;
   teacherName?: string;
+  priceAmount?: number;
+  interval?: 'month' | 'year' | 'monthly' | 'yearly';
+  planName?: string;
+  planId?: string;
   successUrl?: string;
   cancelUrl?: string;
 }): Promise<Stripe.Checkout.Session> => {
-  const priceId = await getOrCreateTeacherPremiumPriceId();
-  const frontendBaseUrl = env.frontend_url || 'http://localhost:3000';
+  const rawInterval = String(interval || '').toLowerCase();
+  const stripeInterval: 'month' | 'year' = (rawInterval === 'year' || rawInterval === 'yearly' || rawInterval === 'annual') ? 'year' : 'month';
+  const amountCents = Math.max(50, Math.round((priceAmount || (stripeInterval === 'year' ? 199.99 : 19.99)) * 100));
 
+  const frontendBaseUrl = env.frontend_url || 'http://localhost:3000';
   const defaultSuccessUrl = `${frontendBaseUrl}/payment/success?session_id={CHECKOUT_SESSION_ID}`;
   const defaultCancelUrl = `${frontendBaseUrl}/payment/cancel`;
 
@@ -121,7 +131,19 @@ export const createTeacherPremiumCheckoutSession = async ({
     mode: 'subscription',
     line_items: [
       {
-        price: priceId,
+        price_data: {
+          currency: 'usd',
+          product_data: {
+            name: planName,
+            description: stripeInterval === 'year'
+              ? 'Yearly subscription for Testify teachers to conduct unlimited exams, access question bank, and get priority support.'
+              : 'Monthly subscription for Testify teachers to conduct unlimited exams, access question bank, and get priority support.',
+          },
+          unit_amount: amountCents,
+          recurring: {
+            interval: stripeInterval,
+          },
+        },
         quantity: 1,
       },
     ],
@@ -132,6 +154,9 @@ export const createTeacherPremiumCheckoutSession = async ({
       teacherId,
       teacherEmail,
       teacherName: teacherName || '',
+      planId: planId || '',
+      interval: stripeInterval,
+      pricePaid: String(priceAmount),
     },
     subscription_data: {
       metadata: {
@@ -139,6 +164,9 @@ export const createTeacherPremiumCheckoutSession = async ({
         teacherId,
         teacherEmail,
         teacherName: teacherName || '',
+        planId: planId || '',
+        interval: stripeInterval,
+        pricePaid: String(priceAmount),
       },
     },
     success_url: successUrl || defaultSuccessUrl,
