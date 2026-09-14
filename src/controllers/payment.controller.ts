@@ -13,7 +13,7 @@ import {
 
 /**
  * 1. POST /api/payments/teacher/premium/checkout
- * Creates a Stripe Checkout Session for Teacher Premium ($20/year subscription).
+ * Creates a Stripe Checkout Session for Teacher Premium plans (Monthly vs Yearly dynamic pricing).
  */
 export const createTeacherPremiumCheckout = async (
   req: Request,
@@ -39,22 +39,100 @@ export const createTeacherPremiumCheckout = async (
       return;
     }
 
-    const { successUrl, cancelUrl } = req.body || {};
+    // Strict restriction: Block new subscription purchase if current subscription is still active and non-expired
+    const userEmailNorm = (user.email || '').toLowerCase().trim();
+    const now = new Date();
+
+    const dbUser = await User.findOne({
+      $or: [
+        { _id: user.id },
+        { email: userEmailNorm },
+        { email: user.email },
+      ],
+    });
+
+    const activeSubscription = await UserSubscription.findOne({
+      $or: [
+        { userId: user.id },
+        { userEmail: userEmailNorm },
+        { userEmail: user.email },
+      ],
+      role: 'teacher',
+      status: 'active',
+      endDate: { $gt: now },
+    }).sort({ endDate: -1 });
+
+    const isAlreadySubscribed = Boolean(
+      (dbUser?.isPremium && dbUser.premiumExpiresAt && dbUser.premiumExpiresAt > now) ||
+      activeSubscription
+    );
+
+    if (isAlreadySubscribed) {
+      const activeExpiry = dbUser?.premiumExpiresAt || activeSubscription?.endDate;
+      const expiryFormatted = activeExpiry 
+        ? new Date(activeExpiry).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) 
+        : 'current active period';
+
+      res.status(400).json({
+        success: false,
+        code: 'ALREADY_SUBSCRIBED',
+        message: `Subscription already active! Your current plan is valid until ${expiryFormatted}. You cannot renew or purchase a new subscription until it expires.`,
+        expiresAt: activeExpiry,
+      });
+      return;
+    }
+
+    const { planId, interval, billingInterval, priceAmount, planName, successUrl, cancelUrl } = req.body || {};
+
+    let selectedPlan = null;
+    if (planId) {
+      selectedPlan = await SubscriptionPlan.findById(planId);
+    }
+
+    const rawInterval = (interval || billingInterval || selectedPlan?.interval || 'monthly').toString().toLowerCase();
+    const isYearly = rawInterval.includes('year') || rawInterval === 'yearly' || rawInterval === 'annual';
+    const stripeInterval: 'month' | 'year' = isYearly ? 'year' : 'month';
+
+    if (!selectedPlan) {
+      selectedPlan = await SubscriptionPlan.findOne({
+        targetRole: 'teacher',
+        interval: isYearly ? 'yearly' : 'monthly',
+      });
+    }
+
+    const finalPrice: number = typeof priceAmount === 'number' && priceAmount > 0
+      ? priceAmount
+      : selectedPlan?.price && selectedPlan.price > 0
+      ? selectedPlan.price
+      : isYearly ? 199.99 : 19.99;
+
+    const finalPlanName: string = planName
+      ? planName
+      : selectedPlan?.name
+      ? selectedPlan.name
+      : isYearly ? 'Teacher Elite (Yearly Plan)' : 'Teacher Pro (Monthly Plan)';
 
     const session = await createTeacherPremiumCheckoutSession({
       teacherId: user.id,
       teacherEmail: user.email,
       teacherName: user.name,
+      priceAmount: finalPrice,
+      interval: stripeInterval,
+      planName: finalPlanName,
+      planId: selectedPlan?._id?.toString() || planId,
       successUrl,
       cancelUrl,
     });
 
-    console.log(`Created Stripe Checkout Session ${session.id} for teacher ${user.email}`);
+    console.log(`Created Stripe Checkout Session ${session.id} for teacher ${user.email} (${finalPlanName} @ $${finalPrice}/${stripeInterval})`);
 
     res.status(200).json({
       success: true,
       sessionId: session.id,
       url: session.url,
+      planName: finalPlanName,
+      price: finalPrice,
+      interval: stripeInterval,
     });
   } catch (error: unknown) {
     console.error('Stripe Checkout Error:', error);
@@ -84,11 +162,23 @@ export const getTeacherPremiumStatus = async (
       return;
     }
 
-    const dbUser = await User.findById(user.id);
+    const userEmailNorm = (user.email || '').toLowerCase().trim();
     const now = new Date();
 
+    const dbUser = await User.findOne({
+      $or: [
+        { _id: user.id },
+        { email: userEmailNorm },
+        { email: user.email },
+      ],
+    });
+
     const activeSubscription = await UserSubscription.findOne({
-      userId: user.id,
+      $or: [
+        { userId: user.id },
+        { userEmail: userEmailNorm },
+        { userEmail: user.email },
+      ],
       role: 'teacher',
       status: 'active',
       endDate: { $gt: now },
@@ -100,6 +190,19 @@ export const getTeacherPremiumStatus = async (
         user.role === 'admin'
     );
 
+    // Auto-heal/sync user record if active subscription exists
+    if (activeSubscription && dbUser && (!dbUser.isPremium || !dbUser.premiumExpiresAt || dbUser.premiumExpiresAt < activeSubscription.endDate)) {
+      await User.findByIdAndUpdate(dbUser._id, {
+        isPremium: true,
+        premiumStatus: 'active',
+        premiumExpiresAt: activeSubscription.endDate,
+      });
+    }
+
+    const expiryDate = dbUser?.premiumExpiresAt || activeSubscription?.endDate || null;
+    const planName = activeSubscription?.planName || (user.role === 'admin' ? 'Administrator Unlimited Access' : 'Testify Teacher Pro Plan');
+    const pricePaid = activeSubscription?.pricePaid || 19.99;
+
     res.status(200).json({
       success: true,
       data: {
@@ -107,12 +210,12 @@ export const getTeacherPremiumStatus = async (
         premiumStatus: isPremiumActive
           ? 'active'
           : dbUser?.premiumStatus || 'none',
-        premiumExpiresAt:
-          dbUser?.premiumExpiresAt || activeSubscription?.endDate || null,
+        premiumExpiresAt: expiryDate,
         stripeCustomerId: dbUser?.stripeCustomerId || null,
         stripeSubscriptionId: dbUser?.stripeSubscriptionId || null,
-        planName: 'Testify Teacher Premium (1 Year)',
-        price: 20,
+        planName,
+        price: pricePaid,
+        interval: activeSubscription?.interval || 'monthly',
         currency: 'USD',
       },
     });
@@ -168,32 +271,42 @@ export const handleStripeWebhook = async (
         const subscriptionId = session.subscription as string;
         const teacherEmail = session.customer_email || session.metadata?.teacherEmail;
         const teacherName = session.metadata?.teacherName;
+        const planId = session.metadata?.planId || session.subscription_data?.metadata?.planId;
+        const stripeInterval = session.metadata?.interval || session.subscription_data?.metadata?.interval || 'year';
+        const pricePaidRaw = session.metadata?.pricePaid || session.subscription_data?.metadata?.pricePaid;
 
         if (teacherId) {
-          const oneYearExpiry = new Date();
-          oneYearExpiry.setFullYear(oneYearExpiry.getFullYear() + 1);
+          const isYearly = stripeInterval === 'year' || stripeInterval === 'yearly';
+          const durationDays = isYearly ? 365 : 30;
+          const pricePaid = pricePaidRaw ? parseFloat(pricePaidRaw) : (isYearly ? 199.99 : 19.99);
+
+          const expiryDate = new Date();
+          expiryDate.setDate(expiryDate.getDate() + durationDays);
 
           // 1. Update User Record
           await User.findByIdAndUpdate(teacherId, {
             isPremium: true,
             premiumStatus: 'active',
-            premiumExpiresAt: oneYearExpiry,
+            premiumExpiresAt: expiryDate,
             stripeCustomerId: customerId,
             stripeSubscriptionId: subscriptionId,
           });
 
           // 2. Ensure Subscription Plan exists in DB
-          let yearlyPlan = await SubscriptionPlan.findOne({
-            targetRole: 'teacher',
-            interval: 'yearly',
-          });
-          if (!yearlyPlan) {
-            yearlyPlan = await SubscriptionPlan.create({
-              name: 'Teacher Premium Annual',
+          let targetPlan = planId ? await SubscriptionPlan.findById(planId) : null;
+          if (!targetPlan) {
+            targetPlan = await SubscriptionPlan.findOne({
               targetRole: 'teacher',
-              interval: 'yearly',
-              price: 20,
-              durationDays: 365,
+              interval: isYearly ? 'yearly' : 'monthly',
+            });
+          }
+          if (!targetPlan) {
+            targetPlan = await SubscriptionPlan.create({
+              name: isYearly ? 'Teacher Premium Annual' : 'Teacher Pro Monthly',
+              targetRole: 'teacher',
+              interval: isYearly ? 'yearly' : 'monthly',
+              price: pricePaid,
+              durationDays: durationDays,
               features: [
                 'Create & Host Unlimited Exams',
                 'Access to Question Bank',
@@ -215,17 +328,17 @@ export const handleStripeWebhook = async (
             userEmail: teacherEmail || 'teacher@testify.io',
             userName: teacherName,
             role: 'teacher',
-            planId: yearlyPlan._id,
-            planName: 'Teacher Premium Annual ($20/yr)',
-            interval: 'yearly',
-            pricePaid: 20,
+            planId: targetPlan._id,
+            planName: targetPlan.name || (isYearly ? 'Teacher Premium Annual' : 'Teacher Pro Monthly'),
+            interval: isYearly ? 'yearly' : 'monthly',
+            pricePaid: pricePaid,
             startDate: new Date(),
-            endDate: oneYearExpiry,
+            endDate: expiryDate,
             status: 'active',
             paymentId: session.payment_intent || session.id || subscriptionId,
           });
 
-          console.log(`✅ Teacher ${teacherId} Premium successfully activated for 1 year.`);
+          console.log(`✅ Teacher ${teacherId} Premium successfully activated (${isYearly ? '1 year' : '1 month'}).`);
         }
         break;
       }
@@ -488,6 +601,56 @@ export const getTeacherRevenue = async (
     res.status(500).json({
       success: false,
       message: 'Failed to fetch teacher revenue summary',
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+/**
+ * 5. GET /api/payments/session/:sessionId
+ * Fetches verified checkout session details directly from Stripe or DB.
+ */
+export const getCheckoutSessionDetails = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const { sessionId } = req.params;
+    if (!sessionId) {
+      res.status(400).json({ success: false, message: 'Session ID is required' });
+      return;
+    }
+
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    const interval = session.metadata?.interval || 'month';
+    const isYearly = interval === 'year' || interval === 'yearly';
+    const pricePaid = session.metadata?.pricePaid
+      ? parseFloat(session.metadata.pricePaid)
+      : session.amount_total
+      ? session.amount_total / 100
+      : isYearly
+      ? 199.99
+      : 19.99;
+    const durationDays = isYearly ? 365 : 30;
+
+    res.status(200).json({
+      success: true,
+      data: {
+        sessionId: session.id,
+        paymentStatus: session.payment_status,
+        customerEmail: session.customer_email,
+        pricePaid,
+        interval: isYearly ? 'yearly' : 'monthly',
+        durationDays,
+        formattedPrice: `$${pricePaid.toFixed(2)}`,
+        planName: isYearly ? 'Teacher Elite (Yearly Plan)' : 'Teacher Pro (Monthly Plan)',
+        message: `Your $${pricePaid.toFixed(2)} ${isYearly ? 'annual' : 'monthly'} subscription payment was verified successfully. Full privileges are unlocked for ${durationDays} days.`,
+      },
+    });
+  } catch (error: unknown) {
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve checkout session details',
       error: error instanceof Error ? error.message : String(error),
     });
   }
