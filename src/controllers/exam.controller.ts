@@ -1102,6 +1102,20 @@ export const startExamAttempt = async (req: Request, res: Response): Promise<voi
     });
 
     const now = new Date();
+
+    // Check if scheduled exam is expired
+    if (exam.scheduleType === 'scheduled' && exam.endDateTime) {
+      const end = new Date(exam.endDateTime);
+      if (!isNaN(end.getTime()) && now > end) {
+        res.status(400).json({
+          success: false,
+          code: 'EXAM_EXPIRED',
+          message: 'This examination has expired and is no longer accepting attempts.',
+        });
+        return;
+      }
+    }
+
     const durationMs = (exam.durationMinutes || 30) * 60 * 1000;
 
     if (!attempt) {
