@@ -24,6 +24,7 @@ export interface IExam extends Document {
   teacherName: string;
   teacherEmail: string;
   accessType: 'free' | 'paid' | 'subscription_only';
+  scheduleType?: 'scheduled' | 'flexible';
   status: 'draft' | 'published' | 'scheduled';
   price: number; // For 'paid' (one-time special exam)
   durationMinutes: number;
@@ -39,6 +40,7 @@ export interface IExam extends Document {
   startDateTime?: string;
   endDateTime?: string;
   date?: string;
+  requireCamera?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -72,6 +74,12 @@ const examSchema = new Schema<IExam>(
       set: (v: string) => (v ? v.toLowerCase() : 'free'),
       index: true,
     },
+    scheduleType: {
+      type: String,
+      enum: ['scheduled', 'flexible'],
+      default: 'flexible',
+      index: true,
+    },
     status: {
       type: String,
       enum: ['draft', 'published', 'scheduled'],
@@ -90,6 +98,7 @@ const examSchema = new Schema<IExam>(
     startDateTime: { type: String },
     endDateTime: { type: String },
     date: { type: String },
+    requireCamera: { type: Boolean, default: false },
     totalEnrolled: { type: Number, default: 0 },
     completedCount: { type: Number, default: 0 },
     schedule: {

@@ -8,6 +8,11 @@ import {
   deleteExam,
   purchaseExam,
   submitExam,
+  startExamAttempt,
+  sendExamHeartbeat,
+  getLiveMonitoringData,
+  getSubmissionTranscript,
+  getTeacherExamsSubmissions,
   getMySubmissions,
   getMyPurchases,
 } from '../controllers/exam.controller';
@@ -46,3 +51,11 @@ router.post('/:id/start', requireAuth, requireExamAccess, async (req, res): Prom
 router.post('/:id/submit', requireAuth, requireExamAccess, submitExam);
 
 export default router;
+
+
+router.post('/:id/start-attempt', requireAuth, startExamAttempt);
+router.post('/:id/heartbeat', requireAuth, sendExamHeartbeat);
+router.get('/teacher/live-monitoring/:examId', requireAuth, requireRole('teacher', 'admin'), getLiveMonitoringData);
+router.get('/submissions/:id/transcript', requireAuth, getSubmissionTranscript);
+
+router.get('/teacher/submissions/all', requireAuth, requireRole('teacher', 'admin'), getTeacherExamsSubmissions);
