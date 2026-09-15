@@ -1,4 +1,5 @@
 import { Server, Socket } from 'socket.io';
+import { ExamAttempt } from '../models/exam-attempt.model';
 
 export interface CandidateTelemetry {
   id: string;
@@ -29,9 +30,13 @@ const disconnectTimers = new Map<string, NodeJS.Timeout>();
 const completedSubmissions = new Map<string, any>();
 
 export function initMonitoringSocket(io: Server) {
-  const broadcastToTeachers = () => {
+  const broadcastToTeachers = (examId?: string) => {
     const list = Array.from(activeCandidates.values());
     io.to('teacher:monitoring').emit('monitoring:candidates_update', list);
+    if (examId) {
+      const filtered = list.filter((c) => c.examId === examId);
+      io.to(`teacher:monitoring:${examId}`).emit('monitoring:candidates_update', filtered);
+    }
   };
 
   io.on('connection', (socket: Socket) => {
@@ -82,11 +87,11 @@ export function initMonitoringSocket(io: Server) {
       activeCandidates.set(candidateKey, telemetry);
       socket.data.candidateKey = candidateKey;
 
-      broadcastToTeachers();
+      broadcastToTeachers(telemetry.examId);
     });
 
     // 2. Student streams heartbeat telemetry
-    socket.on('student:telemetry', (data: Partial<CandidateTelemetry> & { studentId?: string }) => {
+    socket.on('student:telemetry', async (data: Partial<CandidateTelemetry> & { studentId?: string; examId?: string }) => {
       const candidateKey = socket.data.candidateKey || data.studentId || data.id;
       if (!candidateKey) return;
 
@@ -104,10 +109,27 @@ export function initMonitoringSocket(io: Server) {
         };
 
         activeCandidates.set(candidateKey, updated);
-        broadcastToTeachers();
+        broadcastToTeachers(current.examId);
+
+        // Async update DB attempt record for HTTP endpoint synchronization
+        try {
+          if (current.examId && current.studentId) {
+            await ExamAttempt.updateOne(
+              { examId: current.examId, studentId: current.studentId, status: 'in_progress' },
+              {
+                $set: {
+                  'proctoringData.answersCount': updated.answeredCount,
+                  'proctoringData.tabSwitchCount': updated.tabSwitches,
+                  'proctoringData.lastPingAt': new Date(),
+                },
+              }
+            );
+          }
+        } catch (err) {
+          // ignore error
+        }
       }
     });
-
 
     // 3.1 Student submits completed exam answers & score
     socket.on('student:submit_result', (data: any) => {
@@ -121,7 +143,11 @@ export function initMonitoringSocket(io: Server) {
       if (nameKey) completedSubmissions.set(nameKey, data);
 
       io.to('teacher:monitoring').emit('monitoring:student_submitted', data);
+      if (data.examId) {
+        io.to(`teacher:monitoring:${data.examId}`).emit('monitoring:student_submitted', data);
+      }
     });
+
     // 3. Student leaves or finishes
     socket.on('student:leave', (data?: any) => {
       if (data) {
@@ -130,19 +156,32 @@ export function initMonitoringSocket(io: Server) {
         if (emailKey) completedSubmissions.set(emailKey, data);
         if (idKey) completedSubmissions.set(idKey, data);
         io.to('teacher:monitoring').emit('monitoring:student_submitted', data);
+        if (data.examId) {
+          io.to(`teacher:monitoring:${data.examId}`).emit('monitoring:student_submitted', data);
+        }
       }
       const candidateKey = socket.data.candidateKey;
       if (candidateKey) {
+        const current = activeCandidates.get(candidateKey);
         activeCandidates.delete(candidateKey);
-        broadcastToTeachers();
+        broadcastToTeachers(current?.examId);
       }
     });
 
     // 4. Teacher subscribes to monitoring feed
-    socket.on('teacher:subscribe', () => {
+    socket.on('teacher:subscribe', (data?: { examId?: string }) => {
       socket.join('teacher:monitoring');
-      // Send immediate snapshot of all active candidates
-      socket.emit('monitoring:candidates_update', Array.from(activeCandidates.values()));
+      if (data?.examId) {
+        socket.join(`teacher:monitoring:${data.examId}`);
+      }
+
+      const allList = Array.from(activeCandidates.values());
+      const filtered = data?.examId
+        ? allList.filter((c) => c.examId === data.examId)
+        : allList;
+
+      // Send immediate snapshot of active candidates
+      socket.emit('monitoring:candidates_update', filtered);
       socket.emit('monitoring:submissions_snapshot', Array.from(completedSubmissions.values()));
     });
 
@@ -163,7 +202,7 @@ export function initMonitoringSocket(io: Server) {
       if (current) {
         current.status = 'Warning';
         activeCandidates.set(data.studentId, current);
-        broadcastToTeachers();
+        broadcastToTeachers(current.examId);
       }
     });
 
@@ -175,18 +214,18 @@ export function initMonitoringSocket(io: Server) {
         reason: data.reason || 'Session terminated by proctor due to academic integrity violation.',
       });
 
+      const current = activeCandidates.get(data.studentId);
       activeCandidates.delete(data.studentId);
-      broadcastToTeachers();
+      broadcastToTeachers(current?.examId);
     });
 
     // 7. Teacher requests telemetry refresh
-    socket.on('teacher:request_refresh', () => {
-      broadcastToTeachers();
+    socket.on('teacher:request_refresh', (data?: { examId?: string }) => {
+      broadcastToTeachers(data?.examId);
     });
 
-
     // 9. Student transmits webcam video frame
-    socket.on('student:video_frame', (data: { studentId: string; frame: string }) => {
+    socket.on('student:video_frame', (data: { studentId: string; examId?: string; frame: string }) => {
       const candidateKey = socket.data.candidateKey || data.studentId;
       if (!candidateKey) return;
 
@@ -196,10 +235,15 @@ export function initMonitoringSocket(io: Server) {
         current.latestFrame = data.frame;
       }
 
-      io.to('teacher:monitoring').emit('monitoring:video_frame', {
+      const framePayload = {
         studentId: candidateKey,
         frame: data.frame,
-      });
+      };
+
+      io.to('teacher:monitoring').emit('monitoring:video_frame', framePayload);
+      if (data.examId || current?.examId) {
+        io.to(`teacher:monitoring:${data.examId || current?.examId}`).emit('monitoring:video_frame', framePayload);
+      }
     });
 
     // 10. Teacher requests live video stream from student

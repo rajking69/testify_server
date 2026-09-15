@@ -1230,8 +1230,13 @@ export const getLiveMonitoringData = async (req: Request, res: Response): Promis
 
     const liveCandidates = attempts.map((att) => {
       const remainingMs = Math.max(0, att.expiresAt.getTime() - now);
-      const isOnline = att.proctoringData?.lastPingAt ? (now - new Date(att.proctoringData.lastPingAt).getTime() < 15000) : false;
-      const sub = submissions.find((s) => s.studentId === att.studentId);
+      const lastPingTime = att.proctoringData?.lastPingAt ? new Date(att.proctoringData.lastPingAt).getTime() : 0;
+      const isOnline = lastPingTime > 0 && (now - lastPingTime < 35000);
+      const sub = submissions.find(
+        (s) =>
+          s.studentId === att.studentId ||
+          (s.studentEmail && att.studentEmail && s.studentEmail.toLowerCase() === att.studentEmail.toLowerCase())
+      );
 
       return {
         attemptId: att._id,
@@ -1241,8 +1246,8 @@ export const getLiveMonitoringData = async (req: Request, res: Response): Promis
         startedAt: att.startedAt,
         expiresAt: att.expiresAt,
         remainingSeconds: Math.floor(remainingMs / 1000),
-        status: sub ? 'Completed' : (remainingMs <= 0 ? 'Expired' : 'In Progress'),
-        isOnline,
+        status: sub ? 'Completed' : (remainingMs <= 0 || att.status === 'expired' ? 'Expired' : 'In Progress'),
+        isOnline: sub ? false : isOnline,
         progress: {
           answered: att.proctoringData?.answersCount || 0,
           total: exam.questions.length,
