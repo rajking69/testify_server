@@ -461,22 +461,27 @@ export const getTeacherRevenue = async (
 
     const teacherId = user.id;
     const teacherEmail = user.email;
+    const teacherEmailNorm = (teacherEmail || '').toLowerCase().trim();
 
-    // 1. Find all paid/monetized exams created by this teacher
+    // 1. Find all paid/monetized exams created by this teacher (case-insensitive & ID matching)
     const teacherExams = await Exam.find({
       $or: [
         { teacherId: teacherId },
+        { teacherEmail: teacherEmailNorm },
         { teacherEmail: teacherEmail },
+        { teacherEmail: { $regex: new RegExp(`^${teacherEmailNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } },
       ],
     });
 
     const teacherExamIds = teacherExams.map((e) => e._id);
 
-    // 2. Query completed purchases for teacher's exams with strict teacher isolation
+    // 2. Query completed purchases for teacher's exams with strict teacher isolation & case-insensitivity
     const purchases = await ExamPurchase.find({
       $or: [
         { teacherId: teacherId },
+        { teacherEmail: teacherEmailNorm },
         { teacherEmail: teacherEmail },
+        { teacherEmail: { $regex: new RegExp(`^${teacherEmailNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } },
         { examId: { $in: teacherExamIds } },
       ],
       status: 'completed',
@@ -495,7 +500,7 @@ export const getTeacherRevenue = async (
 
     // 3. Calculate Financial Metrics
     const grossRevenue = dedupedPurchases.reduce((sum, p) => sum + (p.pricePaid || 0), 0);
-    const platformFeePercentage = 40; // 10% platform commission
+    const platformFeePercentage = 40; // 40% platform maintenance fee
     const platformFees = (grossRevenue * platformFeePercentage) / 100;
     const teacherEarnings = grossRevenue - platformFees;
 
@@ -535,7 +540,7 @@ export const getTeacherRevenue = async (
 
     teacherExams.forEach((e) => {
       const eId = e._id.toString();
-      if (!examMap.has(eId) && (e.price > 0 || e.accessType === 'paid')) {
+      if (!examMap.has(eId) && (e.price > 0 || e.accessType === 'paid' || e.accessType === 'subscription_only')) {
         examMap.set(eId, {
           examTitle: e.title,
           unitPrice: e.price || 0,
@@ -569,7 +574,7 @@ export const getTeacherRevenue = async (
       examTitle: examMap.get(p.examId.toString())?.examTitle || 'Certified Paid Exam',
       teacherId: p.teacherId,
       amount: p.pricePaid,
-      currency: 'BDT',
+      currency: 'USD',
       paymentProvider: p.paymentProvider || 'STRIPE',
       transactionId: p.transactionId || `TXN-${p._id.toString().slice(-8)}`,
       paymentStatus: p.status === 'completed' ? 'SUCCESS' : p.status.toUpperCase(),
