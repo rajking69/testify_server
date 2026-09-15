@@ -39,14 +39,26 @@ export const requireTeacherSubscription = async (
 
     // Check active premium status or subscription for teacher
     const now = new Date();
-    const dbUser = await User.findById(user.id);
+    const userEmailNorm = (user.email || '').toLowerCase().trim();
+
+    const dbUser = await User.findOne({
+      $or: [
+        { _id: user.id },
+        { email: userEmailNorm },
+        { email: user.email },
+      ],
+    });
+
     const isUserPremium = Boolean(
       dbUser?.isPremium && dbUser.premiumExpiresAt && dbUser.premiumExpiresAt > now
     );
 
     const activeSubscription = await UserSubscription.findOne({
-      userId: user.id,
-      role: 'teacher',
+      $or: [
+        { userId: user.id },
+        { userEmail: userEmailNorm },
+        { userEmail: user.email },
+      ],
       status: 'active',
       endDate: { $gt: now },
     });
