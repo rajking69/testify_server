@@ -178,8 +178,8 @@ export const getTeacherPremiumStatus = async (
         { userId: user.id },
         { userEmail: userEmailNorm },
         { userEmail: user.email },
+        { userEmail: { $regex: new RegExp(`^${userEmailNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } },
       ],
-      role: 'teacher',
       status: 'active',
       endDate: { $gt: now },
     }).sort({ endDate: -1 });

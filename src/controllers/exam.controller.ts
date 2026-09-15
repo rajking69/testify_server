@@ -415,6 +415,7 @@ export const createExam = async (req: Request, res: Response): Promise<void> => 
       joinCode,
       accessToken,
       schedule,
+      requireCamera,
     } = req.body;
 
     if (!title || !title.trim()) {
@@ -469,6 +470,7 @@ export const createExam = async (req: Request, res: Response): Promise<void> => 
       questions: formattedQuestions,
       isPublished: computedIsPublished,
       schedule: schedule || undefined,
+      requireCamera: Boolean(requireCamera),
     });
 
     res.status(201).json({
@@ -565,6 +567,7 @@ export const updateExam = async (req: Request, res: Response): Promise<void> => 
         endDateTime,
         date,
         schedule,
+        requireCamera: Boolean(req.body.requireCamera),
       });
 
       res.status(200).json({
@@ -646,6 +649,7 @@ export const updateExam = async (req: Request, res: Response): Promise<void> => 
     if (endDateTime !== undefined) (exam as any).endDateTime = endDateTime;
     if (date !== undefined) (exam as any).date = date;
     if (schedule !== undefined) exam.schedule = schedule;
+    if (req.body.requireCamera !== undefined) exam.requireCamera = Boolean(req.body.requireCamera);
 
     if (Array.isArray(questions)) {
       exam.questions = questions.map((q: any, idx: number) => ({
@@ -1102,6 +1106,20 @@ export const startExamAttempt = async (req: Request, res: Response): Promise<voi
     });
 
     const now = new Date();
+
+    // Check if scheduled exam is expired
+    if (exam.scheduleType === 'scheduled' && exam.endDateTime) {
+      const end = new Date(exam.endDateTime);
+      if (!isNaN(end.getTime()) && now > end) {
+        res.status(400).json({
+          success: false,
+          code: 'EXAM_EXPIRED',
+          message: 'This examination has expired and is no longer accepting attempts.',
+        });
+        return;
+      }
+    }
+
     const durationMs = (exam.durationMinutes || 30) * 60 * 1000;
 
     if (!attempt) {

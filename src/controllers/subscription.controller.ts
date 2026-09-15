@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import User from '../models/user.model';
 import { SubscriptionPlan } from '../models/subscription-plan.model';
 import { UserSubscription } from '../models/subscription.model';
 
@@ -69,9 +70,14 @@ export const getMySubscription = async (req: Request, res: Response): Promise<vo
   try {
     const user = req.user!;
     const now = new Date();
+    const userEmailNorm = (user.email || '').toLowerCase().trim();
 
     const activeSubscription = await UserSubscription.findOne({
-      userId: user.id,
+      $or: [
+        { userId: user.id },
+        { userEmail: userEmailNorm },
+        { userEmail: user.email },
+      ],
       status: 'active',
       endDate: { $gt: now },
     }).populate('planId');
@@ -108,8 +114,13 @@ export const subscribePlan = async (req: Request, res: Response): Promise<void> 
     }
 
     const now = new Date();
+    const userEmailNorm = (user.email || '').toLowerCase().trim();
     const activeSub = await UserSubscription.findOne({
-      userId: user.id,
+      $or: [
+        { userId: user.id },
+        { userEmail: userEmailNorm },
+        { userEmail: user.email },
+      ],
       status: 'active',
       endDate: { $gt: now },
     });
@@ -140,6 +151,13 @@ export const subscribePlan = async (req: Request, res: Response): Promise<void> 
       endDate,
       status: 'active',
       paymentId: `SUB-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    });
+
+    // Sync User model for instant permission resolution
+    await User.findByIdAndUpdate(user.id, {
+      isPremium: true,
+      premiumStatus: 'active',
+      premiumExpiresAt: endDate,
     });
 
     res.status(200).json({
