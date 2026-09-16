@@ -102,7 +102,6 @@ export const auth = betterAuth({
       sameSite: env.is_production ? 'none' : 'lax',
       secure: env.is_production,
       httpOnly: true,
-      ...(env.is_production ? { partitioned: true } : {}),
     },
   },
   trustedOrigins: [
