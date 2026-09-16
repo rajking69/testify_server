@@ -4,7 +4,10 @@ import path from "path";
 dotenv.config({ path: path.join(process.cwd(), ".env") });
 
 const nodeEnv = process.env.NODE_ENV || 'development';
-const isProduction = nodeEnv === 'production';
+const isProduction =
+  nodeEnv === 'production' ||
+  process.env.RENDER === 'true' ||
+  Boolean(process.env.BETTER_AUTH_URL && process.env.BETTER_AUTH_URL.startsWith('https://'));
 
 // Support both CLIENT_URL and FRONTEND_URL
 const clientUrl = (process.env.CLIENT_URL || process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/+$/, '');
