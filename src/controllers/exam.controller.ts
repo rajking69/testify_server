@@ -1,3 +1,4 @@
+import { ExamAttempt } from '../models/exam-attempt.model';
 import { Request, Response } from 'express';
 import mongoose from 'mongoose';
 import { Exam } from '../models/exam.model';
@@ -397,6 +398,7 @@ export const createExam = async (req: Request, res: Response): Promise<void> => 
       description = '',
       category = 'General',
       subject,
+      scheduleType = 'flexible',
       startDateTime,
       endDateTime,
       date,
@@ -413,6 +415,7 @@ export const createExam = async (req: Request, res: Response): Promise<void> => 
       joinCode,
       accessToken,
       schedule,
+      requireCamera,
     } = req.body;
 
     if (!title || !title.trim()) {
@@ -430,6 +433,7 @@ export const createExam = async (req: Request, res: Response): Promise<void> => 
     const totalM = Number(totalMarks) || 100;
     const computedPassMarks = Number(passMarks || passMark || Math.round((totalM * (Number(passPercentage) || 40)) / 100)) || 40;
     const chosenSubject = String(subject || category || 'General').trim();
+    const chosenScheduleType = String(scheduleType || 'flexible').toLowerCase() === 'scheduled' ? 'scheduled' : 'flexible';
 
     const formattedQuestions = Array.isArray(questions)
       ? questions.map((q: any, idx: number) => ({
@@ -448,6 +452,7 @@ export const createExam = async (req: Request, res: Response): Promise<void> => 
       description: description.trim(),
       category: chosenSubject,
       subject: chosenSubject,
+      scheduleType: chosenScheduleType,
       startDateTime,
       endDateTime,
       date: date || (startDateTime ? new Date(startDateTime).toLocaleString() : undefined),
@@ -465,6 +470,7 @@ export const createExam = async (req: Request, res: Response): Promise<void> => 
       questions: formattedQuestions,
       isPublished: computedIsPublished,
       schedule: schedule || undefined,
+      requireCamera: Boolean(requireCamera),
     });
 
     res.status(201).json({
@@ -561,6 +567,7 @@ export const updateExam = async (req: Request, res: Response): Promise<void> => 
         endDateTime,
         date,
         schedule,
+        requireCamera: Boolean(req.body.requireCamera),
       });
 
       res.status(200).json({
@@ -637,10 +644,12 @@ export const updateExam = async (req: Request, res: Response): Promise<void> => 
     }
     if (joinCode !== undefined) exam.joinCode = joinCode;
     if (accessToken !== undefined) exam.accessToken = accessToken;
+    if (req.body.scheduleType !== undefined) (exam as any).scheduleType = req.body.scheduleType === 'scheduled' ? 'scheduled' : 'flexible';
     if (startDateTime !== undefined) (exam as any).startDateTime = startDateTime;
     if (endDateTime !== undefined) (exam as any).endDateTime = endDateTime;
     if (date !== undefined) (exam as any).date = date;
     if (schedule !== undefined) exam.schedule = schedule;
+    if (req.body.requireCamera !== undefined) exam.requireCamera = Boolean(req.body.requireCamera);
 
     if (Array.isArray(questions)) {
       exam.questions = questions.map((q: any, idx: number) => ({
@@ -733,7 +742,11 @@ export const purchaseExam = async (req: Request, res: Response): Promise<void> =
       return;
     }
 
-    const exam = await Exam.findById(id);
+    const isValidId = mongoose.isValidObjectId(id);
+    const exam = isValidId
+      ? await Exam.findById(id)
+      : await Exam.findOne({ $or: [{ joinCode: new RegExp(`^${id}$`, 'i') }, { accessToken: id }] });
+
     if (!exam) {
       res.status(404).json({
         success: false,
@@ -913,6 +926,7 @@ export const submitExam = async (req: Request, res: Response): Promise<void> => 
 
     const percentage = exam.totalMarks > 0 ? (score / exam.totalMarks) * 100 : 0;
     const isPassed = score >= exam.passMarks;
+    const { grade, gradePoint } = calculateGrade(percentage);
 
     const submission = await ExamSubmission.create({
       studentId: user.id,
@@ -924,6 +938,8 @@ export const submitExam = async (req: Request, res: Response): Promise<void> => 
       totalMarks: exam.totalMarks,
       percentage: Number(percentage.toFixed(2)),
       isPassed,
+      grade,
+      gradePoint,
       timeTakenSeconds: Number(timeTakenSeconds) || 0,
       submittedAt: new Date(),
     });
@@ -1032,5 +1048,331 @@ export const getMyPurchases = async (req: Request, res: Response): Promise<void>
       message: 'Failed to fetch your purchases',
       error: error instanceof Error ? error.message : error,
     });
+  }
+};
+
+
+function calculateGrade(percentage: number): { grade: 'A+' | 'A' | 'B' | 'C' | 'F'; gradePoint: number } {
+  if (percentage >= 80) return { grade: 'A+', gradePoint: 4.0 };
+  if (percentage >= 70) return { grade: 'A', gradePoint: 3.5 };
+  if (percentage >= 60) return { grade: 'B', gradePoint: 3.0 };
+  if (percentage >= 50) return { grade: 'C', gradePoint: 2.0 };
+  return { grade: 'F', gradePoint: 0.0 };
+}
+
+
+// 9. POST /api/exams/:id/start-attempt - Start or resume student exam attempt (Server-Side Timer)
+export const startExamAttempt = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const user = req.user!;
+    const { id } = req.params;
+    
+    if (user.role === 'teacher') {
+      res.status(403).json({ success: false, message: 'Teachers cannot take exams' });
+      return;
+    }
+
+    let exam = await Exam.findById(id);
+    if (!exam && mongoose.isValidObjectId(id)) {
+      exam = await Exam.findById(id);
+    }
+    if (!exam) {
+      exam = await Exam.findOne({ $or: [{ joinCode: new RegExp(`^${id}$`, 'i') }, { accessToken: id }] });
+    }
+    if (!exam) {
+      res.status(404).json({ success: false, message: 'Exam not found' });
+      return;
+    }
+
+    const existingSubmission = await ExamSubmission.findOne({
+      examId: exam._id,
+      $or: [{ studentId: user.id }, { studentEmail: user.email }],
+    });
+
+    if (existingSubmission) {
+      res.status(400).json({
+        success: false,
+        code: 'ALREADY_COMPLETED',
+        message: 'Exam already submitted',
+        submission: existingSubmission,
+      });
+      return;
+    }
+
+    let attempt = await ExamAttempt.findOne({
+      examId: exam._id,
+      studentId: user.id,
+      status: 'in_progress',
+    });
+
+    const now = new Date();
+
+    // Check if scheduled exam is expired
+    if (exam.scheduleType === 'scheduled' && exam.endDateTime) {
+      const end = new Date(exam.endDateTime);
+      if (!isNaN(end.getTime()) && now > end) {
+        res.status(400).json({
+          success: false,
+          code: 'EXAM_EXPIRED',
+          message: 'This examination has expired and is no longer accepting attempts.',
+        });
+        return;
+      }
+    }
+
+    const durationMs = (exam.durationMinutes || 30) * 60 * 1000;
+
+    if (!attempt) {
+      const expiresAt = new Date(now.getTime() + durationMs);
+      attempt = await ExamAttempt.create({
+        studentId: user.id,
+        studentName: user.name,
+        studentEmail: user.email,
+        examId: exam._id,
+        startedAt: now,
+        expiresAt,
+        status: 'in_progress',
+        proctoringData: {
+          currentQuestionIndex: 0,
+          answersCount: 0,
+          cameraActive: true,
+          tabSwitchCount: 0,
+          faceDetected: true,
+          lastPingAt: now,
+        },
+      });
+    }
+
+    const remainingMs = Math.max(0, attempt.expiresAt.getTime() - Date.now());
+
+    res.status(200).json({
+      success: true,
+      data: {
+        attemptId: attempt._id,
+        examId: exam._id,
+        startedAt: attempt.startedAt,
+        expiresAt: attempt.expiresAt,
+        durationMinutes: exam.durationMinutes,
+        remainingSeconds: Math.floor(remainingMs / 1000),
+        serverTime: new Date().toISOString(),
+        isExpired: remainingMs <= 0,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to start attempt', error });
+  }
+};
+
+// 10. POST /api/exams/:id/heartbeat - Student ping with proctoring telemetry
+export const sendExamHeartbeat = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const user = req.user!;
+    const { id } = req.params;
+    const { currentQuestionIndex, answersCount, cameraActive, tabSwitchCount, faceDetected } = req.body;
+
+    const attempt = await ExamAttempt.findOne({
+      examId: id,
+      studentId: user.id,
+      status: 'in_progress',
+    });
+
+    if (!attempt) {
+      res.status(200).json({ success: true, isExpired: true });
+      return;
+    }
+
+    const now = Date.now();
+    const remainingMs = Math.max(0, attempt.expiresAt.getTime() - now);
+    const isExpired = remainingMs <= 0;
+
+    attempt.proctoringData = {
+      currentQuestionIndex: typeof currentQuestionIndex === 'number' ? currentQuestionIndex : attempt.proctoringData.currentQuestionIndex,
+      answersCount: typeof answersCount === 'number' ? answersCount : attempt.proctoringData.answersCount,
+      cameraActive: typeof cameraActive === 'boolean' ? cameraActive : attempt.proctoringData.cameraActive,
+      tabSwitchCount: typeof tabSwitchCount === 'number' ? tabSwitchCount : attempt.proctoringData.tabSwitchCount,
+      faceDetected: typeof faceDetected === 'boolean' ? faceDetected : attempt.proctoringData.faceDetected,
+      lastPingAt: new Date(),
+    };
+
+    if (isExpired) {
+      attempt.status = 'expired';
+    }
+
+    await attempt.save();
+
+    res.status(200).json({
+      success: true,
+      remainingSeconds: Math.floor(remainingMs / 1000),
+      isExpired,
+      serverTime: new Date().toISOString(),
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Heartbeat error', error });
+  }
+};
+
+// 11. GET /api/teacher/exams/:examId/live-monitoring - Teacher Live Real-Time Candidates
+export const getLiveMonitoringData = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const user = req.user!;
+    const { examId } = req.params;
+
+    const exam = await Exam.findById(examId);
+    if (!exam) {
+      res.status(404).json({ success: false, message: 'Exam not found' });
+      return;
+    }
+
+    const attempts = await ExamAttempt.find({ examId }).sort({ updatedAt: -1 });
+    const submissions = await ExamSubmission.find({ examId }).sort({ submittedAt: -1 });
+
+    const now = Date.now();
+
+    const liveCandidates = attempts.map((att) => {
+      const remainingMs = Math.max(0, att.expiresAt.getTime() - now);
+      const lastPingTime = att.proctoringData?.lastPingAt ? new Date(att.proctoringData.lastPingAt).getTime() : 0;
+      const isOnline = lastPingTime > 0 && (now - lastPingTime < 35000);
+      const sub = submissions.find(
+        (s) =>
+          s.studentId === att.studentId ||
+          (s.studentEmail && att.studentEmail && s.studentEmail.toLowerCase() === att.studentEmail.toLowerCase())
+      );
+
+      return {
+        attemptId: att._id,
+        studentId: att.studentId,
+        name: att.studentName,
+        email: att.studentEmail,
+        startedAt: att.startedAt,
+        expiresAt: att.expiresAt,
+        remainingSeconds: Math.floor(remainingMs / 1000),
+        status: sub ? 'Completed' : (remainingMs <= 0 || att.status === 'expired' ? 'Expired' : 'In Progress'),
+        isOnline: sub ? false : isOnline,
+        progress: {
+          answered: att.proctoringData?.answersCount || 0,
+          total: exam.questions.length,
+          currentQuestion: (att.proctoringData?.currentQuestionIndex || 0) + 1,
+        },
+        proctoring: {
+          cameraActive: att.proctoringData?.cameraActive ?? true,
+          faceDetected: att.proctoringData?.faceDetected ?? true,
+          tabSwitchCount: att.proctoringData?.tabSwitchCount || 0,
+        },
+        score: sub ? sub.score : null,
+        percentage: sub ? sub.percentage : null,
+        isPassed: sub ? sub.isPassed : null,
+      };
+    });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        examId: exam._id,
+        examTitle: exam.title,
+        totalQuestions: exam.questions.length,
+        durationMinutes: exam.durationMinutes,
+        totalAttempts: attempts.length,
+        totalSubmissions: submissions.length,
+        activeNow: liveCandidates.filter((c) => c.status === 'In Progress' && c.isOnline).length,
+        candidates: liveCandidates,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to fetch live monitoring data', error });
+  }
+};
+
+// 12. GET /api/submissions/:id/transcript - Get Itemized Academic Transcript
+export const getSubmissionTranscript = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const submission = await ExamSubmission.findById(id);
+
+    if (!submission) {
+      res.status(404).json({ success: false, message: 'Submission transcript not found' });
+      return;
+    }
+
+    const exam = await Exam.findById(submission.examId);
+    const percentage = submission.percentage || (submission.totalMarks > 0 ? (submission.score / submission.totalMarks) * 100 : 0);
+    const { grade, gradePoint } = calculateGrade(percentage);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        transcriptId: `TR-${submission._id.toString().slice(-8).toUpperCase()}`,
+        student: {
+          name: submission.studentName,
+          email: submission.studentEmail,
+          id: submission.studentId,
+        },
+        exam: {
+          title: exam?.title || 'Academic Examination',
+          category: exam?.category || 'General',
+          subject: exam?.subject || 'Assessment',
+          teacherName: exam?.teacherName || 'Instructor',
+          durationMinutes: exam?.durationMinutes || 30,
+        },
+        results: {
+          score: submission.score,
+          totalMarks: submission.totalMarks,
+          percentage: Number(percentage.toFixed(2)),
+          grade,
+          gradePoint,
+          isPassed: submission.isPassed,
+          timeTakenSeconds: submission.timeTakenSeconds || 0,
+          submittedAt: submission.submittedAt,
+        },
+        answers: submission.answers,
+        questions: exam?.questions || [],
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to fetch transcript', error });
+  }
+};
+
+
+// 13. GET /api/teacher/submissions/all - Get all submissions for teacher's exams
+export const getTeacherExamsSubmissions = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const user = req.user!;
+    const teacherExams = await Exam.find({
+      $or: [{ teacherId: user.id }, { teacherEmail: user.email }],
+    });
+
+    const examIds = teacherExams.map((e) => e._id);
+    const submissions = await ExamSubmission.find({ examId: { $in: examIds } }).sort({ submittedAt: -1 });
+
+    const formatted = submissions.map((sub) => {
+      const exam = teacherExams.find((e) => e._id.toString() === sub.examId.toString());
+      return {
+        id: sub._id,
+        submissionId: sub._id,
+        examId: sub.examId,
+        studentId: sub.studentId,
+        studentName: sub.studentName,
+        studentEmail: sub.studentEmail,
+        examTitle: exam?.title || 'Examination',
+        subject: exam?.subject || 'Assessment',
+        category: exam?.category || 'General',
+        score: sub.score,
+        totalMarks: sub.totalMarks,
+        percentage: sub.percentage,
+        grade: sub.grade || (sub.percentage >= 80 ? 'A+' : sub.percentage >= 70 ? 'A' : sub.percentage >= 60 ? 'B' : sub.percentage >= 50 ? 'C' : 'F'),
+        gradePoint: sub.gradePoint || (sub.percentage >= 80 ? 4.0 : sub.percentage >= 70 ? 3.5 : sub.percentage >= 60 ? 3.0 : sub.percentage >= 50 ? 2.0 : 0.0),
+        isPassed: sub.isPassed,
+        timeTakenSeconds: sub.timeTakenSeconds || 0,
+        submittedAt: sub.submittedAt,
+      };
+    });
+
+    res.status(200).json({
+      success: true,
+      count: formatted.length,
+      data: formatted,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to fetch teacher submissions', error });
   }
 };

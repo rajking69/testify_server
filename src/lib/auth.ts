@@ -24,15 +24,30 @@ export const auth = betterAuth({
   database: mongodbAdapter(dbProxy),
   secret: env.better_auth_secret,
   baseURL: env.better_auth_url,
+  account: {
+    accountLinking: {
+      enabled: true,
+      trustedProviders: ["google", "github"],
+    },
+  },
   emailAndPassword: {
     enabled: true,
   },
   socialProviders: {
     ...(env.google_client_id && env.google_client_secret
       ? {
-          google: {
+                    google: {
             clientId: env.google_client_id,
             clientSecret: env.google_client_secret,
+            prompt: "select_account",
+            authParams: {
+              prompt: "select_account",
+            },
+            authorization: {
+              params: {
+                prompt: "select_account",
+              },
+            },
           },
         }
       : {}),
@@ -45,13 +60,38 @@ export const auth = betterAuth({
         }
       : {}),
   },
+  databaseHooks: {
+    user: {
+      create: {
+        before: async (user: any, context: any) => {
+          let selectedRole = user.role;
+          const req = context?.request;
+          if (req) {
+            const cookieHeader = req.headers?.get ? req.headers.get('cookie') : (req.headers as any)?.cookie;
+            if (cookieHeader) {
+              const match = cookieHeader.match(/testify_oauth_role=([^;]+)/);
+              if (match && ['student', 'teacher', 'admin'].includes(match[1])) {
+                selectedRole = match[1];
+              }
+            }
+          }
+          return {
+            data: {
+              ...user,
+              role: selectedRole || 'student',
+            },
+          };
+        },
+      },
+    },
+  },
   user: {
     additionalFields: {
       role: {
         type: ["student", "teacher", "admin"],
         required: false,
         defaultValue: "student",
-        input: false,
+        input: true,
         returned: true,
       },
     },

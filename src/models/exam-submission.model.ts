@@ -18,6 +18,9 @@ export interface IExamSubmission extends Document {
   totalMarks: number;
   percentage: number;
   isPassed: boolean;
+  grade?: 'A+' | 'A' | 'B' | 'C' | 'F';
+  gradePoint?: number;
+  proctoringSummary?: { tabSwitchCount?: number; cameraViolationsCount?: number };
   timeTakenSeconds?: number;
   submittedAt: Date;
   createdAt: Date;

@@ -1,3 +1,5 @@
+import aiRoutes from './ai.routes';
+import userRoutes from './user.routes';
 import { Router } from 'express';
 import examRoutes from './exam.routes';
 import subscriptionRoutes from './subscription.routes';
@@ -16,5 +18,7 @@ router.use('/admin', adminRoutes);
 router.use('/practice', practiceRoutes);
 router.use('/payments', paymentRoutes);
 router.use('/student', studentRoutes);
+router.use('/user', userRoutes);
+router.use('/ai', aiRoutes);
 
 export default router;
