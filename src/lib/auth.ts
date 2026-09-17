@@ -158,13 +158,13 @@ export const auth = betterAuth({
               subject,
               html,
             });
-            console.log(\`Email sent successfully to \${email} for \${type}\`);
+            console.log(`Email sent successfully to ${email} for ${type}`);
           } catch (error) {
             console.error("Failed to send email via Resend:", error);
-            console.log(\`Fallback OTP for \${email} (\${type}): \${otp}\`);
+            console.log(`Fallback OTP for ${email} (${type}): ${otp}`);
           }
         } else {
-          console.log(\`OTP for \${email} (\${type}): \${otp}\`);
+          console.log(`OTP for ${email} (${type}): ${otp}`);
           if (!resend) console.log("Note: Configure resend_api_key in env to enable email sending");
           if (!fromEmail) console.log("Note: Configure resend_from_email in env to enable email sending");
         }
