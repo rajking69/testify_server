@@ -4,6 +4,7 @@ import app from './app';
 import { connectDB } from './config/db';
 import { env } from './config/env';
 import { initMonitoringSocket } from './sockets/monitoring.socket';
+import { initNotificationSocket } from './sockets/notification.socket';
 
 async function startServer(): Promise<void> {
   try {
@@ -25,6 +26,9 @@ async function startServer(): Promise<void> {
 
     // 4. Initialize Live Proctoring and Monitoring Gateway
     initMonitoringSocket(io);
+    
+    // 4.1 Initialize Notification Socket
+    initNotificationSocket(io);
 
     // 5. Start HTTP + WebSocket Server binding to 0.0.0.0
     httpServer.listen(env.port, '0.0.0.0', () => {
