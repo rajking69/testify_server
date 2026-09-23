@@ -6,6 +6,11 @@ import { ExamPurchase } from '../models/exam-purchase.model';
 import { ExamSubmission } from '../models/exam-submission.model';
 import { UserSubscription } from '../models/subscription.model';
 
+// Escape user input for safe use in RegExp
+function escapeRegExp(input: string): string {
+  return String(input).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // Helper to sanitize questions and prevent validation errors
 const sanitizeQuestionsList = (questions: any[]): any[] => {
   if (!Array.isArray(questions)) return [];
@@ -40,14 +45,16 @@ export const getPublicExams = async (req: Request, res: Response): Promise<void>
     };
 
     if (category && category !== 'all' && category !== 'All') {
+      const safeCategory = escapeRegExp(String(category));
       filter.$or = [
-        { category: new RegExp(`^${category}$`, 'i') },
-        { subject: new RegExp(`^${category}$`, 'i') },
+        { category: new RegExp(`^${safeCategory}$`, 'i') },
+        { subject: new RegExp(`^${safeCategory}$`, 'i') },
       ];
     }
 
     if (search) {
-      filter.title = { $regex: String(search), $options: 'i' };
+      const safeSearch = escapeRegExp(String(search));
+      filter.title = { $regex: safeSearch, $options: 'i' };
     }
 
     const exams = await Exam.find(filter)
@@ -150,10 +157,13 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
 
     const cat = category || subject;
     if (cat && cat !== 'all' && cat !== 'All') {
-      const catRegex = new RegExp(`^${cat}$`, 'i');
+      const safeCat = escapeRegExp(String(cat));
       filter.$and = filter.$and || [];
       filter.$and.push({
-        $or: [{ category: catRegex }, { subject: catRegex }],
+        $or: [
+          { category: new RegExp(`^${safeCat}$`, 'i') },
+          { subject: new RegExp(`^${safeCat}$`, 'i') },
+        ],
       });
     }
 
@@ -162,8 +172,14 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
     }
 
     if (search) {
-      const searchRegex = new RegExp(String(search), 'i');
-      const searchOr = [{ title: searchRegex }, { description: searchRegex }, { category: searchRegex }, { subject: searchRegex }];
+      const safeSearch = escapeRegExp(String(search));
+      const searchRegex = new RegExp(safeSearch, 'i');
+      const searchOr = [
+        { title: searchRegex },
+        { description: searchRegex },
+        { category: searchRegex },
+        { subject: searchRegex },
+      ];
       if (filter.$or) {
         filter.$and = filter.$and || [];
         filter.$and.push({ $or: filter.$or }, { $or: searchOr });
@@ -1226,17 +1242,26 @@ export const getLiveMonitoringData = async (req: Request, res: Response): Promis
     const attempts = await ExamAttempt.find({ examId }).sort({ updatedAt: -1 });
     const submissions = await ExamSubmission.find({ examId }).sort({ submittedAt: -1 });
 
+    // Build submission lookup map for O(1) access - eliminates N+1 pattern
+    const submissionMap = new Map<string, typeof submissions[0]>();
+    for (const sub of submissions) {
+      const key = sub.studentId || (sub.studentEmail ? sub.studentEmail.toLowerCase() : '');
+      if (key) {
+        submissionMap.set(key, sub);
+      }
+    }
+
     const now = Date.now();
 
     const liveCandidates = attempts.map((att) => {
       const remainingMs = Math.max(0, att.expiresAt.getTime() - now);
       const lastPingTime = att.proctoringData?.lastPingAt ? new Date(att.proctoringData.lastPingAt).getTime() : 0;
       const isOnline = lastPingTime > 0 && (now - lastPingTime < 35000);
-      const sub = submissions.find(
-        (s) =>
-          s.studentId === att.studentId ||
-          (s.studentEmail && att.studentEmail && s.studentEmail.toLowerCase() === att.studentEmail.toLowerCase())
-      );
+
+      // O(1) lookup instead of O(n) find()
+      const studentIdKey = att.studentId || '';
+      const emailKey = att.studentEmail ? att.studentEmail.toLowerCase() : '';
+      const sub = submissionMap.get(studentIdKey) || submissionMap.get(emailKey);
 
       return {
         attemptId: att._id,
@@ -1341,11 +1366,18 @@ export const getTeacherExamsSubmissions = async (req: Request, res: Response): P
       $or: [{ teacherId: user.id }, { teacherEmail: user.email }],
     });
 
+    // Build exam lookup map for O(1) access - eliminates N+1 pattern
+    const examMap = new Map<string, typeof teacherExams[0]>();
+    for (const exam of teacherExams) {
+      examMap.set(exam._id.toString(), exam);
+    }
+
     const examIds = teacherExams.map((e) => e._id);
     const submissions = await ExamSubmission.find({ examId: { $in: examIds } }).sort({ submittedAt: -1 });
 
     const formatted = submissions.map((sub) => {
-      const exam = teacherExams.find((e) => e._id.toString() === sub.examId.toString());
+      // O(1) lookup instead of O(n) find()
+      const exam = examMap.get(sub.examId.toString());
       return {
         id: sub._id,
         submissionId: sub._id,

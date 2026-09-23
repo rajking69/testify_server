@@ -2,10 +2,14 @@ import { Router } from 'express';
 import { requireAuth, requireRole } from '../middlewares/auth.middleware';
 import {
   getDashboardOverview,
-  getAnalyticsOverview,
   getAllUsers,
   updateUser,
   deleteUser,
+} from '../controllers/admin.users.controller';
+import {
+  getAnalyticsOverview,
+} from '../controllers/admin.analytics.controller';
+import {
   getPayments,
   getFeatureFlags,
   toggleFeatureFlag,
@@ -14,7 +18,7 @@ import {
   deleteFeatureFlag,
   getSystemConfigs,
   updateSystemConfig,
-} from '../controllers/admin.controller';
+} from '../controllers/admin.settings.controller';
 
 const router = Router();
 
