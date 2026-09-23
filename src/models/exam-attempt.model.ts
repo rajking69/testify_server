@@ -47,4 +47,7 @@ const examAttemptSchema = new Schema<IExamAttempt>(
   { timestamps: true }
 );
 
+// Compound index for live monitoring queries: find attempts by status + examId
+examAttemptSchema.index({ status: 1, examId: 1 });
+
 export const ExamAttempt = model<IExamAttempt>('ExamAttempt', examAttemptSchema);

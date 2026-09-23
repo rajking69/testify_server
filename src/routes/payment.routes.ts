@@ -3,10 +3,16 @@ import { requireAuth, requireRole } from '../middlewares/auth.middleware';
 import {
   createTeacherPremiumCheckout,
   getTeacherPremiumStatus,
-  getTeacherRevenue,
+} from '../controllers/payment.checkout.controller';
+import {
   handleStripeWebhook,
+} from '../controllers/payment.webhook.controller';
+import {
+  getTeacherRevenue,
+} from '../controllers/payment.revenue.controller';
+import {
   getCheckoutSessionDetails,
-} from '../controllers/payment.controller';
+} from '../controllers/payment.session.controller';
 
 const router = Router();
 

@@ -1,5 +1,7 @@
 import express, { Application, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
+import rateLimit from 'express-rate-limit';
+import mongoose from 'mongoose';
 import { toNodeHandler } from 'better-auth/node';
 import { auth } from './lib/auth';
 import { env } from './config/env';
@@ -52,10 +54,14 @@ app.use(
   })
 );
 
-// Auto-connect DB middleware for serverless/Vercel functions
+// DB connection is established at startup in server.ts
+// This middleware is kept for serverless/Vercel compatibility where cold starts may need reconnection
 app.use(async (req: Request, res: Response, next: NextFunction) => {
   try {
-    await connectDB();
+    // Only attempt reconnection if not already connected
+    if (mongoose.connection.readyState === 0) {
+      await connectDB();
+    }
     next();
   } catch (error) {
     next(error);
@@ -71,6 +77,36 @@ app.use(
   })
 );
 app.use(express.urlencoded({ extended: true }));
+
+// Rate limiting for authentication endpoints
+const authRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20, // limit each IP to 20 requests per windowMs
+  message: {
+    success: false,
+    code: 'RATE_LIMIT_EXCEEDED',
+    message: 'Too many authentication attempts. Please try again later.',
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  // Trust proxy is already set for Render
+  keyGenerator: (req) => req.ip || req.socket.remoteAddress || 'unknown',
+  handler: (req, res) => {
+    res.status(429).json({
+      success: false,
+      code: 'RATE_LIMIT_EXCEEDED',
+      message: 'Too many authentication attempts. Please try again later.',
+    });
+  },
+});
+
+// Apply rate limiting to auth endpoints
+app.use('/api/auth/sign-in', authRateLimiter);
+app.use('/api/auth/sign-up', authRateLimiter);
+app.use('/api/auth/forget-password', authRateLimiter);
+app.use('/api/auth/reset-password', authRateLimiter);
+app.use('/api/auth/verify-email', authRateLimiter);
+app.use('/api/auth/send-verification-otp', authRateLimiter);
 
 // Better Auth Route Handler
 app.all('/api/auth/*', toNodeHandler(auth));

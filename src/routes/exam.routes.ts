@@ -3,19 +3,27 @@ import {
   getPublicExams,
   getAllExams,
   getExamById,
+} from '../controllers/exam.public.controller';
+import {
   createExam,
   updateExam,
   deleteExam,
+} from '../controllers/exam.management.controller';
+import {
   purchaseExam,
   submitExam,
   startExamAttempt,
   sendExamHeartbeat,
-  getLiveMonitoringData,
-  getSubmissionTranscript,
-  getTeacherExamsSubmissions,
   getMySubmissions,
   getMyPurchases,
-} from '../controllers/exam.controller';
+} from '../controllers/exam.student.controller';
+import {
+  getLiveMonitoringData,
+  getTeacherExamsSubmissions,
+} from '../controllers/exam.monitoring.controller';
+import {
+  getSubmissionTranscript,
+} from '../controllers/exam.transcript.controller';
 import { requireAuth, optionalAuth, requireRole } from '../middlewares/auth.middleware';
 import {
   requireTeacherSubscription,
@@ -50,12 +58,11 @@ router.post('/:id/start', requireAuth, requireExamAccess, async (req, res): Prom
 });
 router.post('/:id/submit', requireAuth, requireExamAccess, submitExam);
 
-export default router;
-
-
 router.post('/:id/start-attempt', requireAuth, startExamAttempt);
 router.post('/:id/heartbeat', requireAuth, sendExamHeartbeat);
 router.get('/teacher/live-monitoring/:examId', requireAuth, requireRole('teacher', 'admin'), getLiveMonitoringData);
 router.get('/submissions/:id/transcript', requireAuth, getSubmissionTranscript);
 
 router.get('/teacher/submissions/all', requireAuth, requireRole('teacher', 'admin'), getTeacherExamsSubmissions);
+
+export default router;

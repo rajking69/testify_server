@@ -27,4 +27,7 @@ const NotificationSchema: Schema = new Schema(
   { timestamps: true }
 );
 
+// Compound index for notification queries: find by recipientId + readStatus
+NotificationSchema.index({ recipientId: 1, readStatus: 1 });
+
 export default mongoose.models.Notification || mongoose.model<INotification>('Notification', NotificationSchema);
