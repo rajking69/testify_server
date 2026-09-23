@@ -20,12 +20,12 @@ export const chatWithGekko = async (req: Request, res: Response): Promise<void> 
 
     const userRole = user.role || 'student';
 
-    // Role Security Check: Only Student and Teacher roles are allowed to access Gekko AI
-    if (userRole !== 'student' && userRole !== 'teacher') {
+    // Role Security Check: Student, Teacher, and Admin roles are allowed to access Gekko AI
+    if (userRole !== 'student' && userRole !== 'teacher' && userRole !== 'admin') {
       res.status(403).json({
         success: false,
         code: 'ROLE_NOT_SUPPORTED',
-        message: 'Gekko AI is only available for Student and Teacher accounts.',
+        message: 'Gekko AI is only available for Student, Teacher, and Admin accounts.',
       });
       return;
     }

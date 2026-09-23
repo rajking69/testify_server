@@ -6,6 +6,7 @@ import {
   finishPracticeSession,
   getPracticeHistory,
   getPracticeSessionById,
+  getPracticeSubjects,
 } from '../controllers/practice.controller';
 
 const router = Router();
@@ -13,6 +14,7 @@ const router = Router();
 // Require login for practice session features
 router.use(requireAuth);
 
+router.get('/subjects', getPracticeSubjects);
 router.post('/start', startPracticeSession);
 router.get('/history', getPracticeHistory);
 router.get('/:id', getPracticeSessionById);

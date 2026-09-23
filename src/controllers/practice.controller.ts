@@ -224,7 +224,31 @@ export const getPracticeHistory = async (req: Request, res: Response): Promise<v
   }
 };
 
-// Get single active/completed practice session details with sanitized questions
+// Get available subjects and topics from the question bank
+export const getPracticeSubjects = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const subjects = await Question.aggregate([
+      { $match: { status: 'READY' } },
+      { $group: { _id: "$subject", topics: { $addToSet: "$topic" } } },
+      { $project: { _id: 0, name: "$_id", topics: 1 } },
+      { $sort: { name: 1 } }
+    ]);
+
+    // Filter out empty strings from topics if any
+    const formattedSubjects = subjects.map(s => ({
+      name: s.name || 'General',
+      topics: s.topics.filter((t: string) => t && t.trim() !== '')
+    }));
+
+    res.status(200).json({
+      success: true,
+      data: formattedSubjects,
+    });
+  } catch (error: unknown) {
+    res.status(500).json({ success: false, message: error instanceof Error ? error.message : String(error) });
+  }
+};
+
 export const getPracticeSessionById = async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.user?.id;
