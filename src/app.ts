@@ -1,11 +1,9 @@
 import express, { Application, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
-import mongoose from 'mongoose';
 import { toNodeHandler } from 'better-auth/node';
 import { auth } from './lib/auth';
 import { env } from './config/env';
-import { connectDB } from './config/db';
 import apiRoutes from './routes';
 
 const app: Application = express();
@@ -53,20 +51,6 @@ app.use(
     exposedHeaders: ['Set-Cookie'],
   })
 );
-
-// DB connection is established at startup in server.ts
-// This middleware is kept for serverless/Vercel compatibility where cold starts may need reconnection
-app.use(async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    // Only attempt reconnection if not already connected
-    if (mongoose.connection.readyState === 0) {
-      await connectDB();
-    }
-    next();
-  } catch (error) {
-    next(error);
-  }
-});
 
 // Body parsers with rawBody preservation for Stripe webhook signature verification
 app.use(
