@@ -178,8 +178,8 @@ export const createTeacherPremiumCheckoutSession = async ({
 
 /**
  * Verifies Stripe Webhook signature with raw request body.
- * In production, signature verification is mandatory.
- * In development, falls back to parsing if webhook secret is not configured.
+ * Signature verification is mandatory in all environments.
+ * Throws if webhook secret is not configured or signature is missing.
  */
 export const constructStripeEvent = (
   rawBody: Buffer | string,
@@ -188,26 +188,11 @@ export const constructStripeEvent = (
   const webhookSecret = env.stripe_webhook_secret;
   const sigHeader = Array.isArray(signature) ? signature[0] : signature;
 
-  // Production: require signature verification
-  if (env.is_production) {
-    if (!webhookSecret) {
-      throw new Error('STRIPE_WEBHOOK_SECRET is required in production');
-    }
-    if (!sigHeader) {
-      throw new Error('Missing Stripe signature header');
-    }
-    return stripe.webhooks.constructEvent(rawBody, sigHeader, webhookSecret);
+  if (!webhookSecret) {
+    throw new Error('STRIPE_WEBHOOK_SECRET is not configured');
   }
-
-  // Development: allow fallback only if webhook secret is not configured
-  if (webhookSecret && sigHeader) {
-    return stripe.webhooks.constructEvent(rawBody, sigHeader, webhookSecret);
+  if (!sigHeader) {
+    throw new Error('Missing Stripe signature header');
   }
-
-  // Development fallback: parse without verification (only for local testing)
-  console.warn('[Stripe] Webhook signature verification skipped in development (no secret/signature)');
-  if (typeof rawBody === 'string') {
-    return JSON.parse(rawBody) as Stripe.Event;
-  }
-  return JSON.parse(rawBody.toString('utf-8')) as Stripe.Event;
+  return stripe.webhooks.constructEvent(rawBody, sigHeader, webhookSecret);
 };
