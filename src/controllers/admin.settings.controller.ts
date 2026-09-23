@@ -7,10 +7,31 @@ import { logger } from '../lib/logger';
 
 export const getPayments = async (req: Request, res: Response): Promise<void> => {
   try {
-    const [purchases, subscriptions] = await Promise.all([
-      ExamPurchase.find().populate('userId', 'name email').populate('examId', 'title price'),
-      UserSubscription.find().populate('planId', 'name price'),
+    const [rawPurchases, subscriptions] = await Promise.all([
+      ExamPurchase.find()
+        .populate('examId', 'title price')
+        .sort({ createdAt: -1 })
+        .lean(),
+      UserSubscription.find()
+        .populate('planId', 'name price')
+        .lean(),
     ]);
+
+    // Map ExamPurchase documents to the Payment shape the frontend expects
+    const purchases = rawPurchases.map((p: any) => ({
+      id: p._id?.toString() || '',
+      userName: p.studentName || 'Unknown Student',
+      userEmail: p.studentEmail || '',
+      amount: p.pricePaid || 0,
+      currency: 'USD',
+      // Frontend expects 'success' but DB stores 'completed'
+      status: p.status === 'completed' ? 'success' : (p.status || 'pending'),
+      paymentMethod: p.paymentProvider || 'N/A',
+      transactionId: p.transactionId || p.paymentId || p._id?.toString() || '',
+      examTitle: p.examId?.title || 'Unknown Exam',
+      createdAt: p.createdAt,
+      processedAt: p.status === 'completed' ? p.updatedAt : undefined,
+    }));
 
     logger.info({ adminId: req.user?.id, purchases: purchases.length, subscriptions: subscriptions.length }, 'Admin payments fetched');
     res.status(200).json({
