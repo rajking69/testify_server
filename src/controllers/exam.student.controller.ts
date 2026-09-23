@@ -8,6 +8,11 @@ import { UserSubscription } from '../models/subscription.model';
 import { calculateGrade, evaluateAnswer } from '../utils/exam.utils';
 import { logger } from '../lib/logger';
 
+// Escape user input for safe use in RegExp
+function escapeRegExp(input: string): string {
+  return String(input).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export const purchaseExam = async (req: Request, res: Response): Promise<void> => {
   try {
     const user = req.user!;
@@ -26,7 +31,7 @@ export const purchaseExam = async (req: Request, res: Response): Promise<void> =
     const isValidId = mongoose.isValidObjectId(id);
     const exam = isValidId
       ? await Exam.findById(id)
-      : await Exam.findOne({ $or: [{ joinCode: new RegExp(`^${id}$`, 'i') }, { accessToken: id }] });
+      : await Exam.findOne({ $or: [{ joinCode: new RegExp(`^${escapeRegExp(id)}$`, 'i') }, { accessToken: id }] });
 
     if (!exam) {
       logger.warn({ examId: id }, 'Exam not found for purchase');
@@ -131,9 +136,10 @@ export const submitExam = async (req: Request, res: Response): Promise<void> => 
       exam = await Exam.findById(cleanId);
     }
     if (!exam) {
+      const safeId = escapeRegExp(cleanId);
       exam = await Exam.findOne({
         $or: [
-          { joinCode: new RegExp(`^${cleanId}$`, 'i') },
+          { joinCode: new RegExp(`^${safeId}$`, 'i') },
           { accessToken: cleanId },
         ],
       });
@@ -256,7 +262,8 @@ export const startExamAttempt = async (req: Request, res: Response): Promise<voi
       exam = await Exam.findById(id);
     }
     if (!exam) {
-      exam = await Exam.findOne({ $or: [{ joinCode: new RegExp(`^${id}$`, 'i') }, { accessToken: id }] });
+      const safeId = escapeRegExp(id);
+      exam = await Exam.findOne({ $or: [{ joinCode: new RegExp(`^${safeId}$`, 'i') }, { accessToken: id }] });
     }
     if (!exam) {
       logger.warn({ examId: id }, 'Exam not found for attempt');
