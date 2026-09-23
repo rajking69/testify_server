@@ -1,5 +1,7 @@
 import http from 'http';
 import { Server as SocketIOServer } from 'socket.io';
+import { createAdapter } from '@socket.io/redis-adapter';
+import Redis from 'ioredis';
 import app from './app';
 import { connectDB } from './config/db';
 import { env } from './config/env';
@@ -24,13 +26,39 @@ async function startServer(): Promise<void> {
       },
     });
 
-    // 4. Initialize Live Proctoring and Monitoring Gateway
+    // 4. Initialize Redis adapter for horizontal scaling
+    const redisUrl = process.env.REDIS_URL || process.env.REDIS_URI;
+    if (redisUrl) {
+      try {
+        const pubClient = new Redis(redisUrl, {
+          maxRetriesPerRequest: 3,
+          retryStrategy: (times) => {
+            if (times > 3) return null;
+            return Math.min(times * 200, 2000);
+          },
+          lazyConnect: true,
+        });
+
+        const subClient = pubClient.duplicate();
+
+        await Promise.all([pubClient.connect(), subClient.connect()]);
+
+        io.adapter(createAdapter(pubClient, subClient));
+        console.log('[Socket.IO] Redis adapter enabled for horizontal scaling');
+      } catch (error) {
+        console.warn('[Socket.IO] Failed to initialize Redis adapter, running in single-instance mode:', error);
+      }
+    } else {
+      console.log('[Socket.IO] REDIS_URL not configured, running in single-instance mode');
+    }
+
+    // 5. Initialize Live Proctoring and Monitoring Gateway
     initMonitoringSocket(io);
-    
-    // 4.1 Initialize Notification Socket
+
+    // 5.1 Initialize Notification Socket
     initNotificationSocket(io);
 
-    // 5. Start HTTP + WebSocket Server binding to 0.0.0.0
+    // 6. Start HTTP + WebSocket Server binding to 0.0.0.0
     httpServer.listen(env.port, '0.0.0.0', () => {
       console.log(`Server running in ${env.node_env} mode on port ${env.port} (HTTP & Socket.IO)`);
     });

@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import User from '../models/user.model';
 import { SubscriptionPlan } from '../models/subscription-plan.model';
 import { UserSubscription } from '../models/subscription.model';
+import { getOrSetCache, CacheKeys, CacheTTL, invalidateCachePattern } from '../lib/cache';
 
 // Seed default plans if collection is empty
 const seedDefaultPlans = async () => {
@@ -37,7 +38,7 @@ const seedDefaultPlans = async () => {
         isActive: true,
       },
     ]);
-  }
+  };
 };
 
 // 1. GET /api/subscriptions/plans - Get all available plans
@@ -49,7 +50,10 @@ export const getSubscriptionPlans = async (req: Request, res: Response): Promise
     const filter: any = { isActive: true };
     if (role) filter.targetRole = role;
 
-    const plans = await SubscriptionPlan.find(filter).sort({ price: 1 });
+    const cacheKey = role ? CacheKeys.PLANS_BY_ROLE(role as string) : CacheKeys.PLANS;
+    const plans = await getOrSetCache(cacheKey, async () => {
+      return SubscriptionPlan.find(filter).sort({ price: 1 }).lean();
+    }, { ttl: CacheTTL.LONG });
 
     res.status(200).json({
       success: true,
@@ -207,6 +211,9 @@ export const createPlanAdmin = async (req: Request, res: Response): Promise<void
       isActive: isActive !== undefined ? Boolean(isActive) : true,
     });
 
+    // Invalidate plans cache
+    await invalidateCachePattern('plans*');
+
     res.status(201).json({ success: true, message: 'Subscription plan created successfully', data: newPlan });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to create plan', error: error instanceof Error ? error.message : error });
@@ -236,6 +243,9 @@ export const updatePlanAdmin = async (req: Request, res: Response): Promise<void
       return;
     }
 
+    // Invalidate plans cache
+    await invalidateCachePattern('plans*');
+
     res.status(200).json({ success: true, message: 'Subscription plan updated successfully', data: updatedPlan });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to update plan', error: error instanceof Error ? error.message : error });
@@ -251,6 +261,10 @@ export const deletePlanAdmin = async (req: Request, res: Response): Promise<void
       res.status(404).json({ success: false, message: 'Subscription plan not found' });
       return;
     }
+
+    // Invalidate plans cache
+    await invalidateCachePattern('plans*');
+
     res.status(200).json({ success: true, message: 'Subscription plan deleted successfully', data: { id } });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to delete plan', error: error instanceof Error ? error.message : error });
