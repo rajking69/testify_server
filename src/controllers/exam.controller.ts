@@ -5,6 +5,8 @@ import { Exam } from '../models/exam.model';
 import { ExamPurchase } from '../models/exam-purchase.model';
 import { ExamSubmission } from '../models/exam-submission.model';
 import { UserSubscription } from '../models/subscription.model';
+import { evaluateAnswer, calculateGrade } from '../utils/exam.utils';
+import { getSocketIOInstance } from '../app';
 
 // Escape user input for safe use in RegExp
 function escapeRegExp(input: string): string {
@@ -41,7 +43,7 @@ export const getPublicExams = async (req: Request, res: Response): Promise<void>
   try {
     const { category, search } = req.query;
     const filter: any = {
-      isPublished: { $ne: false },
+      status: 'published',
     };
 
     if (category && category !== 'all' && category !== 'All') {
@@ -133,23 +135,23 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
         filter.teacherId = teacherId;
       } else {
         filter.teacherId = teacherId;
-        filter.isPublished = { $ne: false };
+        filter.status = 'published';
       }
     } else if (teacherEmail) {
       if (user && (user.email === teacherEmail || user.role === 'admin')) {
         filter.teacherEmail = teacherEmail;
       } else {
         filter.teacherEmail = teacherEmail;
-        filter.isPublished = { $ne: false };
+        filter.status = 'published';
       }
     } else if (isPublished !== undefined && user && user.role === 'admin') {
-      filter.isPublished = isPublished === 'true';
+      filter.status = isPublished === 'true' ? 'published' : 'draft';
     } else if (!user || user.role === 'student') {
-      filter.isPublished = { $ne: false };
+      filter.status = 'published';
     } else if (user.role === 'teacher') {
       // Teachers can see their own exams (draft or published) OR published exams from others
       filter.$or = [
-        { isPublished: { $ne: false } },
+        { status: 'published' },
         { teacherId: user.id },
         { teacherEmail: user.email },
       ];
@@ -345,7 +347,7 @@ export const getExamById = async (req: Request, res: Response): Promise<void> =>
     const isCreatorOrAdmin = isCreator || isAdmin;
 
     // If draft/unpublished, only creator or admin can view
-    if (exam.isPublished === false && (exam as any).status !== 'PUBLISHED' && !isCreatorOrAdmin) {
+    if (exam.status === 'draft' && !isCreatorOrAdmin) {
       res.status(404).json({
         success: false,
         code: 'NOT_FOUND',
@@ -462,6 +464,16 @@ export const createExam = async (req: Request, res: Response): Promise<void> => 
           explanation: q.explanation || '',
         }))
       : [];
+
+    // Validate question count (max 100 per exam)
+    if (formattedQuestions.length > 100) {
+      res.status(400).json({
+        success: false,
+        code: 'TOO_MANY_QUESTIONS',
+        message: `Exam cannot have more than 100 questions. Provided: ${formattedQuestions.length}`,
+      });
+      return;
+    }
 
     const newExam = await Exam.create({
       title: title.trim(),
@@ -668,7 +680,7 @@ export const updateExam = async (req: Request, res: Response): Promise<void> => 
     if (req.body.requireCamera !== undefined) exam.requireCamera = Boolean(req.body.requireCamera);
 
     if (Array.isArray(questions)) {
-      exam.questions = questions.map((q: any, idx: number) => ({
+      const formattedQuestions = questions.map((q: any, idx: number) => ({
         id: String(q.id || q._id || `q_${Date.now()}_${idx}`),
         questionText: q.questionText || q.question || '',
         options: Array.isArray(q.options) ? q.options : [],
@@ -677,6 +689,18 @@ export const updateExam = async (req: Request, res: Response): Promise<void> => 
         marks: Number(q.marks) || 1,
         explanation: q.explanation || '',
       }));
+
+      // Validate question count (max 100 per exam)
+      if (formattedQuestions.length > 100) {
+        res.status(400).json({
+          success: false,
+          code: 'TOO_MANY_QUESTIONS',
+          message: `Exam cannot have more than 100 questions. Provided: ${formattedQuestions.length}`,
+        });
+        return;
+      }
+
+      exam.questions = formattedQuestions;
     }
 
     await exam.save();
@@ -724,6 +748,13 @@ export const deleteExam = async (req: Request, res: Response): Promise<void> => 
       });
       return;
     }
+
+    // Clean up related records (but preserve financial/audit records)
+    await Promise.all([
+      ExamAttempt.deleteMany({ examId: exam._id }),
+      ExamSubmission.deleteMany({ examId: exam._id }),
+      // Note: ExamPurchase records are preserved for financial audit trail
+    ]);
 
     await Exam.findByIdAndDelete(id);
 
@@ -812,29 +843,72 @@ export const purchaseExam = async (req: Request, res: Response): Promise<void> =
       return;
     }
 
-    // Record purchase
-    const purchase = await ExamPurchase.create({
-      studentId: user.id,
-      studentEmail: user.email,
-      studentName: user.name,
-      examId: exam._id,
-      teacherId: exam.teacherId,
-      teacherEmail: exam.teacherEmail,
-      pricePaid: exam.price,
-      paymentId: req.body.paymentId || `PAY-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      transactionId: req.body.transactionId || `TXN-EXAM-${Date.now()}`,
-      paymentProvider: req.body.paymentProvider || 'STRIPE',
-      status: 'completed',
-    });
+    // Record purchase with transaction for referential integrity
+    const session = await mongoose.startSession();
+    session.startTransaction();
 
-    // Increment enrollment count
-    await Exam.findByIdAndUpdate(exam._id, { $inc: { totalEnrolled: 1 } });
+    let purchase: any;
 
-    res.status(200).json({
-      success: true,
-      message: 'Exam purchased successfully! You can now participate.',
-      data: purchase,
-    });
+    try {
+      const purchaseResult = await ExamPurchase.create([{
+        studentId: user.id,
+        studentEmail: user.email,
+        studentName: user.name,
+        examId: exam._id,
+        teacherId: exam.teacherId,
+        teacherEmail: exam.teacherEmail,
+        pricePaid: exam.price,
+        paymentId: req.body.paymentId || `PAY-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        transactionId: req.body.transactionId || `TXN-EXAM-${Date.now()}`,
+        paymentProvider: req.body.paymentProvider || 'STRIPE',
+        status: 'completed',
+      }], { session });
+
+      purchase = purchaseResult[0];
+
+      await Exam.findByIdAndUpdate(exam._id, { $inc: { totalEnrolled: 1 } }, { session });
+
+      await session.commitTransaction();
+
+      // Emit real-time revenue update to teacher via Socket.IO
+      try {
+        const io = getSocketIOInstance();
+        if (io) {
+          io.to(`teacher:monitoring:${exam._id}`).emit('teacher:revenue_update', {
+            examId: exam._id.toString(),
+            examTitle: exam.title,
+            purchaseId: purchase._id.toString(),
+            studentName: user.name,
+            studentEmail: user.email,
+            amount: exam.price,
+            timestamp: new Date().toISOString(),
+          });
+          // Also emit to general teacher monitoring room
+          io.to('teacher:monitoring').emit('teacher:revenue_update', {
+            examId: exam._id.toString(),
+            examTitle: exam.title,
+            purchaseId: purchase._id.toString(),
+            studentName: user.name,
+            studentEmail: user.email,
+            amount: exam.price,
+            timestamp: new Date().toISOString(),
+          });
+        }
+      } catch (socketError) {
+        console.warn('Failed to emit revenue update via Socket.IO:', socketError);
+      }
+
+      res.status(200).json({
+        success: true,
+        message: 'Exam purchased successfully! You can now participate.',
+        data: purchase,
+      });
+    } catch (transactionError) {
+      await session.abortTransaction();
+      throw transactionError;
+    } finally {
+      await session.endSession();
+    }
   } catch (error) {
     res.status(500).json({
       success: false,
@@ -899,6 +973,39 @@ export const submitExam = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
+    // Server-authoritative exam timing check
+    const attempt = await ExamAttempt.findOne({
+      examId: exam._id,
+      studentId: user.id,
+      status: 'in_progress',
+    });
+
+    if (attempt) {
+      const now = new Date();
+      if (attempt.expiresAt < now) {
+        // Mark attempt as expired
+        attempt.status = 'expired';
+        await attempt.save();
+        res.status(403).json({
+          success: false,
+          code: 'EXAM_EXPIRED',
+          message: 'This examination has expired and can no longer be submitted.',
+        });
+        return;
+      }
+    } else if (exam.scheduleType === 'scheduled' && exam.endDateTime) {
+      // For scheduled exams without an attempt, check the scheduled end time
+      const end = new Date(exam.endDateTime);
+      if (!isNaN(end.getTime()) && new Date() > end) {
+        res.status(403).json({
+          success: false,
+          code: 'EXAM_EXPIRED',
+          message: 'This examination has expired and is no longer accepting attempts.',
+        });
+        return;
+      }
+    }
+
     // Evaluate answers
     let score = 0;
     const evaluatedAnswers = answers.map((ans: any) => {
@@ -914,21 +1021,7 @@ export const submitExam = async (req: Request, res: Response): Promise<void> => 
         }
       }
 
-      let isCorrect = false;
-      if (q) {
-        if (q.correctOptionIndex !== undefined && selectedIdx >= 0 && q.correctOptionIndex === selectedIdx) {
-          isCorrect = true;
-        } else if (q.correctAnswer && ans.submittedAnswer && String(q.correctAnswer).trim().toLowerCase() === String(ans.submittedAnswer).trim().toLowerCase()) {
-          isCorrect = true;
-        } else if (q.correctOptionIndex !== undefined && q.options && q.options[q.correctOptionIndex]) {
-          const correctText = String(q.options[q.correctOptionIndex]).trim().toLowerCase();
-          if (ans.submittedAnswer && String(ans.submittedAnswer).trim().toLowerCase() === correctText) {
-            isCorrect = true;
-          }
-        }
-      }
-
-      const marksObtained = isCorrect ? (q?.marks || 1) : 0;
+      const { isCorrect, marksObtained } = evaluateAnswer(q!, selectedIdx, ans.submittedAnswer);
       score += marksObtained;
 
       return {
@@ -1066,15 +1159,6 @@ export const getMyPurchases = async (req: Request, res: Response): Promise<void>
     });
   }
 };
-
-
-function calculateGrade(percentage: number): { grade: 'A+' | 'A' | 'B' | 'C' | 'F'; gradePoint: number } {
-  if (percentage >= 80) return { grade: 'A+', gradePoint: 4.0 };
-  if (percentage >= 70) return { grade: 'A', gradePoint: 3.5 };
-  if (percentage >= 60) return { grade: 'B', gradePoint: 3.0 };
-  if (percentage >= 50) return { grade: 'C', gradePoint: 2.0 };
-  return { grade: 'F', gradePoint: 0.0 };
-}
 
 
 // 9. POST /api/exams/:id/start-attempt - Start or resume student exam attempt (Server-Side Timer)

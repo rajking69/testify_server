@@ -1,5 +1,6 @@
 import { Server, Socket } from 'socket.io';
 import { ExamAttempt } from '../models/exam-attempt.model';
+import { socketAuthMiddleware, validateStudentIdentity, validateTeacherExamAccess, validateTeacherWarning, validateStudentExamMembership, AuthenticatedUser } from './auth.socket';
 
 export interface CandidateTelemetry {
   id: string;
@@ -30,6 +31,9 @@ const disconnectTimers = new Map<string, NodeJS.Timeout>();
 const completedSubmissions = new Map<string, any>();
 
 export function initMonitoringSocket(io: Server) {
+  // Apply authentication middleware to all monitoring socket connections
+  io.use(socketAuthMiddleware);
+
   const broadcastToTeachers = (examId?: string) => {
     const list = Array.from(activeCandidates.values());
     io.to('teacher:monitoring').emit('monitoring:candidates_update', list);
@@ -40,8 +44,9 @@ export function initMonitoringSocket(io: Server) {
   };
 
   io.on('connection', (socket: Socket) => {
+    const user = socket.data.user as AuthenticatedUser;
     // 1. Student joins live examination
-    socket.on('student:join', (data: {
+    socket.on('student:join', async (data: {
       studentId?: string;
       name?: string;
       email?: string;
@@ -50,7 +55,23 @@ export function initMonitoringSocket(io: Server) {
       examTitle?: string;
       totalQuestions?: number;
     }) => {
-      const candidateKey = data.studentId || data.email || socket.id;
+      // Validate student identity - use authenticated user from socket
+      if (!validateStudentIdentity(socket, data.studentId || data.email || '')) {
+        socket.emit('error', { message: 'Unauthorized: Cannot join as another student' });
+        return;
+      }
+
+      // Use authenticated user's identity as source of truth
+      const candidateKey = user.id; // Use authenticated user ID as key
+      
+      // Verify exam membership if examId provided
+      if (data.examId) {
+        const hasMembership = await validateStudentExamMembership(user.id, data.examId);
+        if (!hasMembership) {
+          socket.emit('error', { message: 'Not enrolled in this exam' });
+          return;
+        }
+      }
 
       // Cancel any disconnect grace timer if student reconnected
       if (disconnectTimers.has(candidateKey)) {
@@ -67,9 +88,9 @@ export function initMonitoringSocket(io: Server) {
       const telemetry: CandidateTelemetry = {
         id: candidateKey,
         socketId: socket.id,
-        studentId: data.studentId || candidateKey,
-        name: data.name || existing?.name || 'Student Candidate',
-        email: data.email || existing?.email || 'student@testify.local',
+        studentId: user.id, // Use authenticated user ID
+        name: user.name,
+        email: user.email,
         rollNo: data.rollNo || existing?.rollNo || '',
         examId: data.examId || existing?.examId || 'general',
         examTitle: data.examTitle || existing?.examTitle || 'Live Examination',
@@ -92,10 +113,17 @@ export function initMonitoringSocket(io: Server) {
 
     // 2. Student streams heartbeat telemetry
     socket.on('student:telemetry', async (data: Partial<CandidateTelemetry> & { studentId?: string; examId?: string }) => {
-      const candidateKey = socket.data.candidateKey || data.studentId || data.id;
+      const candidateKey = socket.data.candidateKey;
       if (!candidateKey) return;
 
+      // Validate that the telemetry belongs to the authenticated student
       const current = activeCandidates.get(candidateKey);
+      if (current && current.studentId !== user.id) {
+        // Student trying to send telemetry for another student - reject
+        socket.emit('error', { message: 'Unauthorized: Cannot send telemetry for another student' });
+        return;
+      }
+      
       if (current) {
         const updated: CandidateTelemetry = {
           ...current,
@@ -169,11 +197,23 @@ export function initMonitoringSocket(io: Server) {
     });
 
     // 4. Teacher subscribes to monitoring feed
-    socket.on('teacher:subscribe', (data?: { examId?: string }) => {
-      socket.join('teacher:monitoring');
+    socket.on('teacher:subscribe', async (data?: { examId?: string }) => {
+      // Validate teacher authorization
+      if (user.role !== 'teacher' && user.role !== 'admin') {
+        socket.emit('error', { message: 'Unauthorized: Only teachers can monitor exams' });
+        return;
+      }
+
       if (data?.examId) {
+        const hasAccess = await validateTeacherExamAccess(socket, data.examId);
+        if (!hasAccess) {
+          socket.emit('error', { message: 'Unauthorized: You do not own this exam' });
+          return;
+        }
         socket.join(`teacher:monitoring:${data.examId}`);
       }
+      
+      socket.join('teacher:monitoring');
 
       const allList = Array.from(activeCandidates.values());
       const filtered = data?.examId
@@ -186,15 +226,25 @@ export function initMonitoringSocket(io: Server) {
     });
 
     // 5. Teacher transmits warning to candidate
-    socket.on('teacher:send_warning', (data: { studentId: string; message: string; candidateName?: string }) => {
-      if (!data.studentId || !data.message) return;
+    socket.on('teacher:send_warning', async (data: { studentId: string; examId: string; message: string; candidateName?: string }) => {
+      if (!data.studentId || !data.examId || !data.message) {
+        socket.emit('error', { message: 'Missing required fields: studentId, examId, message' });
+        return;
+      }
+
+      // Validate teacher authorization to send warning
+      const authorized = await validateTeacherWarning(socket, data.studentId, data.examId);
+      if (!authorized) {
+        socket.emit('error', { message: 'Unauthorized: Cannot send warning to this student' });
+        return;
+      }
 
       const payload = {
         message: data.message,
         timestamp: new Date().toLocaleTimeString(),
       };
 
-      // Broadcast directly to candidate's room
+      // Broadcast directly to candidate's room (using their user ID as key)
       io.to(`student:${data.studentId}`).emit('proctor:warning', payload);
 
       // Also mark candidate status as Warning in feed
@@ -207,16 +257,28 @@ export function initMonitoringSocket(io: Server) {
     });
 
     // 6. Teacher terminates session remotely
-    socket.on('teacher:terminate_session', (data: { studentId: string; reason?: string }) => {
-      if (!data.studentId) return;
+    socket.on('teacher:terminate_session', async (data: { studentId: string; examId: string; reason?: string }) => {
+      if (!data.studentId || !data.examId) {
+        socket.emit('error', { message: 'Missing required fields: studentId, examId' });
+        return;
+      }
+
+      // Validate teacher authorization to terminate
+      const authorized = await validateTeacherWarning(socket, data.studentId, data.examId);
+      if (!authorized) {
+        socket.emit('error', { message: 'Unauthorized: Cannot terminate this session' });
+        return;
+      }
 
       io.to(`student:${data.studentId}`).emit('proctor:terminate', {
         reason: data.reason || 'Session terminated by proctor due to academic integrity violation.',
       });
 
       const current = activeCandidates.get(data.studentId);
-      activeCandidates.delete(data.studentId);
-      broadcastToTeachers(current?.examId);
+      if (current) {
+        activeCandidates.delete(data.studentId);
+        broadcastToTeachers(current.examId);
+      }
     });
 
     // 7. Teacher requests telemetry refresh
