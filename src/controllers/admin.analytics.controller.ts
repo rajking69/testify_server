@@ -238,31 +238,14 @@ export const getAnalyticsOverview = async (req: Request, res: Response): Promise
     const systemHealth = [];
     for (let i = 5; i >= 0; i--) {
       const t = new Date(now.getTime() - i * 2 * 60 * 60 * 1000);
-      if (i === 0) {
-        systemHealth.push({
-          timestamp: t.toISOString(),
-          cpuUsage,
-          memoryUsage,
-          diskUsage: 58,
-          apiLatency,
-          activeConnections,
-        });
-      } else {
-        const varianceFactor = Math.sin(i * 1.5) * 0.08;
-        const varCpu = Number(Math.max(5, Math.min(95, cpuUsage * (1 + varianceFactor))).toFixed(1));
-        const varMem = Number(Math.max(10, Math.min(95, memoryUsage * (1 + varianceFactor * 0.5))).toFixed(1));
-        const varLatency = Math.max(1, Math.round(apiLatency * (1 + varianceFactor * 0.6)));
-        const varConn = Math.max(1, Math.round(activeConnections * (1 + varianceFactor * 0.4)));
-
-        systemHealth.push({
-          timestamp: t.toISOString(),
-          cpuUsage: varCpu,
-          memoryUsage: varMem,
-          diskUsage: 58,
-          apiLatency: varLatency,
-          activeConnections: varConn,
-        });
-      }
+      systemHealth.push({
+        timestamp: t.toISOString(),
+        cpuUsage,
+        memoryUsage,
+        diskUsage: 58,
+        apiLatency,
+        activeConnections,
+      });
     }
 
     logger.info({ adminId: req.user?.id }, 'Admin analytics overview fetched');

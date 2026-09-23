@@ -7,8 +7,20 @@ import { auth } from './lib/auth';
 import { env } from './config/env';
 import { connectDB } from './config/db';
 import apiRoutes from './routes';
+import { Server as SocketIOServer } from 'socket.io';
 
 const app: Application = express();
+
+// Socket.IO instance holder
+let socketIOInstance: SocketIOServer | null = null;
+
+export function setSocketIOInstance(io: SocketIOServer) {
+  socketIOInstance = io;
+}
+
+export function getSocketIOInstance(): SocketIOServer | null {
+  return socketIOInstance;
+}
 
 // Trust reverse proxy (Required for Render HTTPS load balancers)
 app.set('trust proxy', 1);
@@ -89,6 +101,7 @@ const authRateLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { keyGeneratorIpFallback: false },
   // Trust proxy is already set for Render
   keyGenerator: (req) => req.ip || req.socket.remoteAddress || 'unknown',
   handler: (req, res) => {

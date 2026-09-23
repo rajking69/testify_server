@@ -63,9 +63,7 @@ export const requireTeacherSubscription = async (
       endDate: { $gt: now },
     });
 
-    // Allow exam creation in non-production environments for development and testing
-    const isDev = process.env.NODE_ENV !== 'production';
-    if (!isDev && !isUserPremium && !activeSubscription) {
+    if (!isUserPremium && !activeSubscription) {
       res.status(403).json({
         success: false,
         code: 'SUBSCRIPTION_REQUIRED',
