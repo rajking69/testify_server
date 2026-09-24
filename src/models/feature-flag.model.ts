@@ -1,0 +1,26 @@
+import mongoose, { Schema, Document } from 'mongoose';
+
+export interface IFeatureFlag extends Document {
+  key: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  category: string;
+  roles: string[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const FeatureFlagSchema: Schema = new Schema(
+  {
+    key: { type: String, required: true, unique: true },
+    name: { type: String, required: true },
+    description: { type: String, required: true },
+    enabled: { type: Boolean, default: true },
+    category: { type: String, enum: ['ai', 'security', 'system'], default: 'system' },
+    roles: [{ type: String }],
+  },
+  { timestamps: true }
+);
+
+export default mongoose.models.FeatureFlag || mongoose.model<IFeatureFlag>('FeatureFlag', FeatureFlagSchema);
