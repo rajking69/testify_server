@@ -1,11 +1,24 @@
 import { Request, Response } from 'express';
-import { aiService } from '../services/ai.service';
+import { aiService, AIError } from '../services/ai.service';
 import { ExamAttempt } from '../models/exam-attempt.model';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 
-/**
- * POST /api/ai/chat
- * Primary endpoint for chatting with Gekko AI Study Assistant
- */
+const aiChatRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => ipKeyGenerator(req.ip || 'unknown'),
+  message: {
+    success: false,
+    code: 'AI_RATE_LIMIT',
+    message: 'Too many AI requests. Please wait a moment before sending another message.',
+  },
+  skip: (req) => req.method !== 'POST',
+});
+
+export const aiChatRateLimiter = aiChatRateLimit;
+
 export const chatWithGekko = async (req: Request, res: Response): Promise<void> => {
   try {
     const user = req.user;
@@ -20,7 +33,6 @@ export const chatWithGekko = async (req: Request, res: Response): Promise<void> 
 
     const userRole = user.role || 'student';
 
-    // Role Security Check: Student, Teacher, and Admin roles are allowed to access Gekko AI
     if (userRole !== 'student' && userRole !== 'teacher' && userRole !== 'admin') {
       res.status(403).json({
         success: false,
@@ -30,8 +42,6 @@ export const chatWithGekko = async (req: Request, res: Response): Promise<void> 
       return;
     }
 
-    // Server-Side Anti-Cheating & Exam Restriction Verification:
-    // Check if the user currently has an active in-progress exam attempt.
     const activeExamAttempt = await ExamAttempt.findOne({
       $or: [
         { studentId: user.id },
@@ -51,9 +61,8 @@ export const chatWithGekko = async (req: Request, res: Response): Promise<void> 
       return;
     }
 
-    const { message, context, history } = req.body;
+    const { message, context, history, stream } = req.body;
 
-    // Validation
     if (!message || typeof message !== 'string' || !message.trim()) {
       res.status(400).json({
         success: false,
@@ -75,7 +84,60 @@ export const chatWithGekko = async (req: Request, res: Response): Promise<void> 
 
     const userName = user.name || 'Learner';
 
-    // Generate response via Gekko AI Service
+    if (stream) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.flushHeaders();
+
+      let hasError = false;
+      let sentDone = false;
+
+      const sendEvent = (data: any) => {
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      };
+
+      const sendError = (error: AIError) => {
+        sendEvent({
+          error: {
+            code: error.code,
+            message: error.message,
+            provider: error.provider,
+          },
+        });
+      };
+
+      try {
+        for await (const chunk of aiService.generateGekkoResponseStream(
+          cleanMessage,
+          userRole,
+          userName,
+          context,
+          history
+        )) {
+          if (chunk.text) {
+            sendEvent({ chunk: chunk.text, provider: chunk.provider });
+          }
+          if (chunk.isComplete) {
+            if (!sentDone) {
+              sendEvent({ done: true, provider: chunk.provider });
+              sentDone = true;
+            }
+          }
+        }
+      } catch (streamError) {
+        hasError = true;
+        const error = classifyStreamError(streamError);
+        sendError(error);
+      } finally {
+        if (!hasError && !sentDone) {
+          sendEvent({ done: true });
+        }
+        res.end();
+      }
+      return;
+    }
+
     const aiResponseText = await aiService.generateGekkoResponse(
       cleanMessage,
       userRole,
@@ -101,3 +163,17 @@ export const chatWithGekko = async (req: Request, res: Response): Promise<void> 
     });
   }
 };
+
+function classifyStreamError(err: any): AIError {
+  const message = err?.message || String(err);
+  if (message.includes('timeout') || message.includes('ETIMEDOUT')) {
+    return { code: 'AI_TIMEOUT', message: 'AI request timed out', isTemporary: true, provider: 'gemini' };
+  }
+  if (message.includes('429') || message.includes('rate limit')) {
+    return { code: 'AI_RATE_LIMIT', message: 'AI rate limit exceeded', isTemporary: true, provider: 'gemini' };
+  }
+  if (message.includes('500') || message.includes('502') || message.includes('503') || message.includes('504')) {
+    return { code: 'AI_SERVER_ERROR', message: 'AI server error', isTemporary: true, provider: 'gemini' };
+  }
+  return { code: 'AI_SERVICE_ERROR', message: 'AI service error', isTemporary: false, provider: 'gemini' };
+}
