@@ -1,7 +1,13 @@
 import { Server, Socket } from 'socket.io';
 import { ExamAttempt } from '../models/exam-attempt.model';
-import { auth } from '../lib/auth';
-import { fromNodeHeaders } from 'better-auth/node';
+import {
+  socketAuthMiddleware,
+  validateStudentIdentity,
+  validateTeacherExamAccess,
+  validateTeacherWarning,
+  validateStudentExamMembership,
+  AuthenticatedUser,
+} from './auth.socket';
 
 export interface CandidateTelemetry {
   id: string;
@@ -32,41 +38,10 @@ const activeCandidates = new Map<string, CandidateTelemetry>();
 const disconnectTimers = new Map<string, NodeJS.Timeout>();
 const completedSubmissions = new Map<string, any>();
 
-// Helper to verify Better Auth session from socket handshake
-async function verifySocketAuth(socket: Socket): Promise<{ userId: string; email: string; role: string; name?: string } | null> {
-  try {
-    // Extract cookies from socket handshake headers
-    const headers = socket.handshake.headers;
-    const cookieHeader = headers.cookie;
-
-    if (!cookieHeader) {
-      return null;
-    }
-
-    // Use Better Auth to get session from cookie
-    const session = await auth.api.getSession({
-      headers: fromNodeHeaders({
-        cookie: cookieHeader,
-      }),
-    });
-
-    if (!session?.user) {
-      return null;
-    }
-
-    return {
-      userId: session.user.id,
-      email: session.user.email,
-      role: session.user.role || 'student',
-      name: session.user.name,
-    };
-  } catch (error) {
-    console.error('[Socket Auth] Verification failed:', error);
-    return null;
-  }
-}
-
 export function initMonitoringSocket(io: Server) {
+  // Apply authentication middleware to all monitoring socket connections
+  io.use(socketAuthMiddleware);
+
   const broadcastToTeachers = (examId?: string) => {
     const list = Array.from(activeCandidates.values());
     io.to('teacher:monitoring').emit('monitoring:candidates_update', list);
@@ -76,28 +51,15 @@ export function initMonitoringSocket(io: Server) {
     }
   };
 
-  // Authentication middleware for socket connections
-  io.use(async (socket, next) => {
-    const authData = await verifySocketAuth(socket);
-    if (!authData) {
-      return next(new Error('Authentication required'));
-    }
-    // Attach user info to socket for later use
-    socket.data.user = authData;
-    next();
-  });
-
   io.on('connection', (socket: Socket) => {
-    const user = socket.data.user;
-    
-    // Only allow students to join exams, teachers to monitor
-    if (user.role !== 'student' && user.role !== 'teacher') {
+    const user = socket.data.user as AuthenticatedUser;
+    if (!user) {
       socket.disconnect();
       return;
     }
 
     // 1. Student joins live examination
-    socket.on('student:join', (data: {
+    socket.on('student:join', async (data: {
       studentId?: string;
       name?: string;
       email?: string;
@@ -106,14 +68,23 @@ export function initMonitoringSocket(io: Server) {
       examTitle?: string;
       totalQuestions?: number;
     }) => {
-      // Verify the studentId matches authenticated user
-      if (user.role === 'student' && data.studentId && data.studentId !== user.userId) {
-        console.warn(`[Socket] Student ${user.userId} attempted to join as ${data.studentId}`);
+      // Validate student identity - use authenticated user from socket
+      if (!validateStudentIdentity(socket, data.studentId || data.email || '')) {
         socket.emit('error', { message: 'Unauthorized: Cannot join as another student' });
         return;
       }
 
-      const candidateKey = user.userId;
+      // Use authenticated user's identity as source of truth
+      const candidateKey = user.id;
+
+      // Verify exam membership if examId provided
+      if (data.examId) {
+        const hasMembership = await validateStudentExamMembership(user.id, data.examId);
+        if (!hasMembership) {
+          socket.emit('error', { message: 'Not enrolled in this exam' });
+          return;
+        }
+      }
 
       // Cancel any disconnect grace timer if student reconnected
       if (disconnectTimers.has(candidateKey)) {
@@ -130,7 +101,7 @@ export function initMonitoringSocket(io: Server) {
       const telemetry: CandidateTelemetry = {
         id: candidateKey,
         socketId: socket.id,
-        studentId: user.userId,
+        studentId: user.id,
         name: data.name || user.name || existing?.name || 'Student Candidate',
         email: user.email,
         rollNo: data.rollNo || existing?.rollNo || '',
@@ -155,10 +126,17 @@ export function initMonitoringSocket(io: Server) {
 
     // 2. Student streams heartbeat telemetry
     socket.on('student:telemetry', async (data: Partial<CandidateTelemetry> & { studentId?: string; examId?: string }) => {
-      const candidateKey = socket.data.candidateKey || data.studentId || data.id;
+      const candidateKey = socket.data.candidateKey;
       if (!candidateKey) return;
 
+      // Validate that the telemetry belongs to the authenticated student
       const current = activeCandidates.get(candidateKey);
+      if (current && current.studentId !== user.id) {
+        // Student trying to send telemetry for another student - reject
+        socket.emit('error', { message: 'Unauthorized: Cannot send telemetry for another student' });
+        return;
+      }
+
       if (current) {
         const updated: CandidateTelemetry = {
           ...current,
@@ -232,16 +210,23 @@ export function initMonitoringSocket(io: Server) {
     });
 
     // 4. Teacher subscribes to monitoring feed
-    socket.on('teacher:subscribe', (data?: { examId?: string }) => {
-      // Verify user is a teacher
-      if (user.role !== 'teacher') {
-        socket.emit('error', { message: 'Unauthorized: Teacher role required' });
+    socket.on('teacher:subscribe', async (data?: { examId?: string }) => {
+      // Validate teacher authorization
+      if (user.role !== 'teacher' && user.role !== 'admin') {
+        socket.emit('error', { message: 'Unauthorized: Only teachers can monitor exams' });
         return;
       }
-      socket.join('teacher:monitoring');
+
       if (data?.examId) {
+        const hasAccess = await validateTeacherExamAccess(socket, data.examId);
+        if (!hasAccess) {
+          socket.emit('error', { message: 'Unauthorized: You do not own this exam' });
+          return;
+        }
         socket.join(`teacher:monitoring:${data.examId}`);
       }
+
+      socket.join('teacher:monitoring');
 
       const allList = Array.from(activeCandidates.values());
       const filtered = data?.examId
@@ -254,20 +239,25 @@ export function initMonitoringSocket(io: Server) {
     });
 
     // 5. Teacher transmits warning to candidate
-    socket.on('teacher:send_warning', (data: { studentId: string; message: string; candidateName?: string }) => {
-      // Verify user is a teacher
-      if (user.role !== 'teacher') {
-        socket.emit('error', { message: 'Unauthorized: Teacher role required' });
+    socket.on('teacher:send_warning', async (data: { studentId: string; examId: string; message: string; candidateName?: string }) => {
+      if (!data.studentId || !data.examId || !data.message) {
+        socket.emit('error', { message: 'Missing required fields: studentId, examId, message' });
         return;
       }
-      if (!data.studentId || !data.message) return;
+
+      // Validate teacher authorization to send warning
+      const authorized = await validateTeacherWarning(socket, data.studentId, data.examId);
+      if (!authorized) {
+        socket.emit('error', { message: 'Unauthorized: Cannot send warning to this student' });
+        return;
+      }
 
       const payload = {
         message: data.message,
         timestamp: new Date().toLocaleTimeString(),
       };
 
-      // Broadcast directly to candidate's room
+      // Broadcast directly to candidate's room (using their user ID as key)
       io.to(`student:${data.studentId}`).emit('proctor:warning', payload);
 
       // Also mark candidate status as Warning in feed
@@ -280,27 +270,34 @@ export function initMonitoringSocket(io: Server) {
     });
 
     // 6. Teacher terminates session remotely
-    socket.on('teacher:terminate_session', (data: { studentId: string; reason?: string }) => {
-      // Verify user is a teacher
-      if (user.role !== 'teacher') {
-        socket.emit('error', { message: 'Unauthorized: Teacher role required' });
+    socket.on('teacher:terminate_session', async (data: { studentId: string; examId: string; reason?: string }) => {
+      if (!data.studentId || !data.examId) {
+        socket.emit('error', { message: 'Missing required fields: studentId, examId' });
         return;
       }
-      if (!data.studentId) return;
+
+      // Validate teacher authorization to terminate
+      const authorized = await validateTeacherWarning(socket, data.studentId, data.examId);
+      if (!authorized) {
+        socket.emit('error', { message: 'Unauthorized: Cannot terminate this session' });
+        return;
+      }
 
       io.to(`student:${data.studentId}`).emit('proctor:terminate', {
         reason: data.reason || 'Session terminated by proctor due to academic integrity violation.',
       });
 
       const current = activeCandidates.get(data.studentId);
-      activeCandidates.delete(data.studentId);
-      broadcastToTeachers(current?.examId);
+      if (current) {
+        activeCandidates.delete(data.studentId);
+        broadcastToTeachers(current.examId);
+      }
     });
 
     // 7. Teacher requests telemetry refresh
     socket.on('teacher:request_refresh', (data?: { examId?: string }) => {
-      // Verify user is a teacher
-      if (user.role !== 'teacher') {
+      // Verify user is a teacher or admin
+      if (user.role !== 'teacher' && user.role !== 'admin') {
         socket.emit('error', { message: 'Unauthorized: Teacher role required' });
         return;
       }
@@ -315,7 +312,7 @@ export function initMonitoringSocket(io: Server) {
         return;
       }
       const candidateKey = socket.data.candidateKey || data.studentId;
-      if (candidateKey !== user.userId) {
+      if (candidateKey !== user.id) {
         socket.emit('error', { message: 'Unauthorized: Cannot send video for another student' });
         return;
       }
@@ -340,8 +337,8 @@ export function initMonitoringSocket(io: Server) {
 
     // 10. Teacher requests live video stream from student
     socket.on('teacher:request_video_stream', (data: { studentId: string }) => {
-      // Verify user is a teacher
-      if (user.role !== 'teacher') {
+      // Verify user is a teacher or admin
+      if (user.role !== 'teacher' && user.role !== 'admin') {
         socket.emit('error', { message: 'Unauthorized: Teacher role required' });
         return;
       }
@@ -351,8 +348,8 @@ export function initMonitoringSocket(io: Server) {
 
     // 11. Teacher stops live video stream
     socket.on('teacher:stop_video_stream', (data: { studentId: string }) => {
-      // Verify user is a teacher
-      if (user.role !== 'teacher') {
+      // Verify user is a teacher or admin
+      if (user.role !== 'teacher' && user.role !== 'admin') {
         socket.emit('error', { message: 'Unauthorized: Teacher role required' });
         return;
       }
@@ -360,11 +357,10 @@ export function initMonitoringSocket(io: Server) {
       io.to('student:' + data.studentId).emit('proctor:stop_video_stream');
     });
 
-
     // WebRTC Signaling: Teacher sends offer
     socket.on('webrtc:offer', (data: { studentId: string; offer: any }) => {
-      // Verify user is a teacher
-      if (user.role !== 'teacher') {
+      // Verify user is a teacher or admin
+      if (user.role !== 'teacher' && user.role !== 'admin') {
         socket.emit('error', { message: 'Unauthorized: Teacher role required' });
         return;
       }
@@ -384,12 +380,12 @@ export function initMonitoringSocket(io: Server) {
       }
       if (data.teacherSocketId) {
         io.to(data.teacherSocketId).emit('webrtc:answer', {
-          studentId: user.userId,
+          studentId: user.id,
           answer: data.answer,
         });
       } else {
         io.to('teacher:monitoring').emit('webrtc:answer', {
-          studentId: user.userId,
+          studentId: user.id,
           answer: data.answer,
         });
       }
@@ -397,7 +393,7 @@ export function initMonitoringSocket(io: Server) {
 
     // WebRTC Signaling: ICE candidate exchange
     socket.on('webrtc:ice_candidate', (data: { targetStudentId?: string; targetTeacherSocketId?: string; candidate: any; fromStudentId?: string }) => {
-      if (user.role === 'teacher') {
+      if (user.role === 'teacher' || user.role === 'admin') {
         // Teacher sending ICE candidate to student
         if (data.targetStudentId) {
           io.to('student:' + data.targetStudentId).emit('webrtc:ice_candidate', {
@@ -408,12 +404,12 @@ export function initMonitoringSocket(io: Server) {
         // Student sending ICE candidate to teacher
         if (data.targetTeacherSocketId) {
           io.to(data.targetTeacherSocketId).emit('webrtc:ice_candidate', {
-            fromStudentId: user.userId,
+            fromStudentId: user.id,
             candidate: data.candidate,
           });
         } else {
           io.to('teacher:monitoring').emit('webrtc:ice_candidate', {
-            fromStudentId: user.userId,
+            fromStudentId: user.id,
             candidate: data.candidate,
           });
         }
@@ -422,8 +418,8 @@ export function initMonitoringSocket(io: Server) {
 
     // WebRTC Signaling: Hang up / close stream
     socket.on('webrtc:hangup', (data: { studentId: string }) => {
-      // Verify user is a teacher
-      if (user.role !== 'teacher') {
+      // Verify user is a teacher or admin
+      if (user.role !== 'teacher' && user.role !== 'admin') {
         socket.emit('error', { message: 'Unauthorized: Teacher role required' });
         return;
       }

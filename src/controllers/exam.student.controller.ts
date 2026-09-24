@@ -7,6 +7,7 @@ import { ExamAttempt } from '../models/exam-attempt.model';
 import { UserSubscription } from '../models/subscription.model';
 import { calculateGrade, evaluateAnswer } from '../utils/exam.utils';
 import { logger } from '../lib/logger';
+import { getSocketIOInstance } from '../app';
 
 // Escape user input for safe use in RegExp
 function escapeRegExp(input: string): string {
@@ -81,23 +82,68 @@ export const purchaseExam = async (req: Request, res: Response): Promise<void> =
       return;
     }
 
-    const purchase = await ExamPurchase.create({
-      studentId: user.id,
-      studentEmail: user.email,
-      studentName: user.name,
-      examId: exam._id,
-      teacherId: exam.teacherId,
-      teacherEmail: exam.teacherEmail,
-      pricePaid: exam.price,
-      paymentId: req.body.paymentId || `PAY-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      transactionId: req.body.transactionId || `TXN-EXAM-${Date.now()}`,
-      paymentProvider: req.body.paymentProvider || 'STRIPE',
-      status: 'completed',
-    });
+    let purchase: any;
 
-    await Exam.findByIdAndUpdate(exam._id, { $inc: { totalEnrolled: 1 } });
+    const session = await mongoose.startSession();
+    session.startTransaction();
 
-    logger.info({ purchaseId: purchase._id, examId: exam._id, studentId: user.id, amount: exam.price }, 'Exam purchased');
+    try {
+      const purchaseResult = await ExamPurchase.create([{
+        studentId: user.id,
+        studentEmail: user.email,
+        studentName: user.name,
+        examId: exam._id,
+        teacherId: exam.teacherId,
+        teacherEmail: exam.teacherEmail,
+        pricePaid: exam.price,
+        paymentId: req.body.paymentId || `PAY-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        transactionId: req.body.transactionId || `TXN-EXAM-${Date.now()}`,
+        paymentProvider: req.body.paymentProvider || 'STRIPE',
+        status: 'completed',
+      }], { session });
+
+      purchase = purchaseResult[0];
+
+      await Exam.findByIdAndUpdate(exam._id, { $inc: { totalEnrolled: 1 } }, { session });
+
+      await session.commitTransaction();
+
+      logger.info({ purchaseId: purchase._id, examId: exam._id, studentId: user.id, amount: exam.price }, 'Exam purchased');
+    } catch (transactionError) {
+      await session.abortTransaction();
+      throw transactionError;
+    } finally {
+      await session.endSession();
+    }
+
+    // Emit real-time revenue update to teacher via Socket.IO
+    try {
+      const io = getSocketIOInstance();
+      if (io) {
+        io.to(`teacher:monitoring:${exam._id}`).emit('teacher:revenue_update', {
+          examId: exam._id.toString(),
+          examTitle: exam.title,
+          purchaseId: purchase._id.toString(),
+          studentName: user.name,
+          studentEmail: user.email,
+          amount: exam.price,
+          timestamp: new Date().toISOString(),
+        });
+        // Also emit to general teacher monitoring room
+        io.to('teacher:monitoring').emit('teacher:revenue_update', {
+          examId: exam._id.toString(),
+          examTitle: exam.title,
+          purchaseId: purchase._id.toString(),
+          studentName: user.name,
+          studentEmail: user.email,
+          amount: exam.price,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    } catch (socketError) {
+      logger.warn({ error: socketError }, 'Failed to emit revenue update via Socket.IO');
+    }
+
     res.status(200).json({
       success: true,
       message: 'Exam purchased successfully! You can now participate.',
@@ -167,6 +213,41 @@ export const submitExam = async (req: Request, res: Response): Promise<void> => 
         message: 'You have already attempted this examination. Only one attempt is permitted per account.',
       });
       return;
+    }
+
+    // Server-authoritative exam timing check
+    const attempt = await ExamAttempt.findOne({
+      examId: exam._id,
+      studentId: user.id,
+      status: 'in_progress',
+    });
+
+    if (attempt) {
+      const now = new Date();
+      if (attempt.expiresAt < now) {
+        // Mark attempt as expired
+        attempt.status = 'expired';
+        await attempt.save();
+        logger.warn({ examId: exam._id, studentId: user.id }, 'Submission rejected - exam expired');
+        res.status(403).json({
+          success: false,
+          code: 'EXAM_EXPIRED',
+          message: 'This examination has expired and can no longer be submitted.',
+        });
+        return;
+      }
+    } else if (exam.scheduleType === 'scheduled' && exam.endDateTime) {
+      // For scheduled exams without an attempt, check the scheduled end time
+      const end = new Date(exam.endDateTime);
+      if (!isNaN(end.getTime()) && new Date() > end) {
+        logger.warn({ examId: exam._id, studentId: user.id }, 'Submission rejected - scheduled exam expired');
+        res.status(403).json({
+          success: false,
+          code: 'EXAM_EXPIRED',
+          message: 'This examination has expired and is no longer accepting attempts.',
+        });
+        return;
+      }
     }
 
     let score = 0;

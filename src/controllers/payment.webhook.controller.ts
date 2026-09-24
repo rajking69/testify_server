@@ -182,6 +182,34 @@ export const handleStripeWebhook = async (
         break;
       }
 
+      case 'customer.subscription.trial_will_end': {
+        const subscription = event.data.object as any;
+        const subscriptionId = subscription.id;
+        const customerId = subscription.customer as string;
+        
+        // Notify teacher that trial is ending soon (3 days before)
+        await User.findOneAndUpdate(
+          { stripeSubscriptionId: subscriptionId },
+          { premiumStatus: 'trial_ending' }
+        );
+        logger.info({ subscriptionId, customerId }, 'Subscription trial ending soon');
+        break;
+      }
+
+      case 'payment_intent.succeeded': {
+        const paymentIntent = event.data.object as any;
+        // Handle one-time payment success (non-subscription)
+        // This can be used for direct exam purchases if we move to Stripe PaymentIntents
+        logger.info({ paymentIntentId: paymentIntent.id, amount: paymentIntent.amount }, 'Payment intent succeeded');
+        break;
+      }
+
+      case 'payment_intent.payment_failed': {
+        const paymentIntent = event.data.object as any;
+        logger.warn({ paymentIntentId: paymentIntent.id, error: paymentIntent.last_payment_error }, 'Payment intent failed');
+        break;
+      }
+
       default:
         logger.info({ eventType: event.type }, 'Unhandled Stripe event type');
     }

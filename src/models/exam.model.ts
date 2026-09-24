@@ -109,4 +109,23 @@ const examSchema = new Schema<IExam>(
   { timestamps: true }
 );
 
+// Pre-save validation: ensure exam doesn't exceed MongoDB 16MB document limit
+// and question count doesn't exceed 100
+examSchema.pre('save', function (next) {
+  const MAX_QUESTIONS = 100;
+  const MAX_DOCUMENT_SIZE_BYTES = 16 * 1024 * 1024; // 16MB
+
+  if (this.questions && this.questions.length > MAX_QUESTIONS) {
+    return next(new Error(`Exam cannot have more than ${MAX_QUESTIONS} questions. Current: ${this.questions.length}`));
+  }
+
+  // Rough estimate of document size
+  const docSize = Buffer.byteLength(JSON.stringify(this.toObject()));
+  if (docSize > MAX_DOCUMENT_SIZE_BYTES) {
+    return next(new Error(`Exam document size (${Math.round(docSize / 1024 / 1024)}MB) exceeds MongoDB 16MB limit`));
+  }
+
+  next();
+});
+
 export const Exam = model<IExam>('Exam', examSchema);

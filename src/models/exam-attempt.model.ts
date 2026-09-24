@@ -16,7 +16,7 @@ export interface IExamAttempt extends Document {
   examId: Types.ObjectId;
   startedAt: Date;
   expiresAt: Date;
-  status: 'in_progress' | 'submitted' | 'expired';
+  status: 'in_progress' | 'submitted' | 'expired' | 'abandoned';
   proctoringData: IExamAttemptProctoring;
   createdAt: Date;
   updatedAt: Date;
@@ -32,7 +32,7 @@ const examAttemptSchema = new Schema<IExamAttempt>(
     expiresAt: { type: Date, required: true },
     status: {
       type: String,
-      enum: ['in_progress', 'submitted', 'expired'],
+      enum: ['in_progress', 'submitted', 'expired', 'abandoned'],
       default: 'in_progress',
     },
     proctoringData: {
@@ -49,5 +49,19 @@ const examAttemptSchema = new Schema<IExamAttempt>(
 
 // Compound index for live monitoring queries: find attempts by status + examId
 examAttemptSchema.index({ status: 1, examId: 1 });
+
+// TTL Index: Automatically delete expired/abandoned attempts after 24 hours
+// Only applies to documents where status is 'expired' or 'abandoned'
+examAttemptSchema.index(
+  { updatedAt: 1 },
+  { expireAfterSeconds: 86400, partialFilterExpression: { status: { $in: ['expired', 'abandoned'] } } }
+);
+
+// TTL Index: Automatically delete in_progress attempts that are stale (no heartbeat for 2 hours)
+// This handles abandoned attempts where student closed tab without submitting
+examAttemptSchema.index(
+  { 'proctoringData.lastPingAt': 1 },
+  { expireAfterSeconds: 7200, partialFilterExpression: { status: 'in_progress' } }
+);
 
 export const ExamAttempt = model<IExamAttempt>('ExamAttempt', examAttemptSchema);

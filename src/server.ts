@@ -2,7 +2,7 @@ import http from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import Redis from 'ioredis';
-import app from './app';
+import app, { setSocketIOInstance } from './app';
 import { connectDB } from './config/db';
 import { env } from './config/env';
 import { initMonitoringSocket } from './sockets/monitoring.socket';
@@ -51,6 +51,9 @@ async function startServer(): Promise<void> {
     } else {
       console.log('[Socket.IO] REDIS_URL not configured, running in single-instance mode');
     }
+
+    // Make Socket.IO instance available to controllers
+    setSocketIOInstance(io);
 
     // 5. Initialize Live Proctoring and Monitoring Gateway
     initMonitoringSocket(io);

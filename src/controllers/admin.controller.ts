@@ -1,4 +1,3 @@
-import { Question } from '../models/question.model';
 import { Request, Response } from 'express';
 import mongoose from 'mongoose';
 import os from 'os';
@@ -7,6 +6,10 @@ import { Exam } from '../models/exam.model';
 import { ExamSubmission } from '../models/exam-submission.model';
 import { ExamPurchase } from '../models/exam-purchase.model';
 import { UserSubscription } from '../models/subscription.model';
+import { ExamAttempt } from '../models/exam-attempt.model';
+import { Question } from '../models/question.model';
+import { PracticeSession } from '../models/practice-session.model';
+import Notification from '../models/notification.model';
 import FeatureFlag from '../models/feature-flag.model';
 import SystemConfig from '../models/system-config.model';
 
@@ -33,10 +36,10 @@ export const getDashboardOverview = async (req: Request, res: Response): Promise
     const subscriptionRevenue = subRevAgg[0]?.total || 0;
     const totalRevenue = purchaseRevenue + subscriptionRevenue;
 
-    // Platform fee calculations: 15% commission on exam sales + 100% of teacher subscriptions
-    const platformFeeRate = 15; // 15% platform commission
+    // Platform fee calculations: 40% commission on exam sales + 100% of teacher subscriptions
+    const platformFeeRate = 40; // 40% platform commission on exam purchases
     const platformFeeFromPurchases = Number((purchaseRevenue * (platformFeeRate / 100)).toFixed(2));
-    const platformFeeFromSubscriptions = subscriptionRevenue;
+    const platformFeeFromSubscriptions = subscriptionRevenue; // 100% platform fee for subscriptions
     const totalPlatformFee = Number((platformFeeFromPurchases + platformFeeFromSubscriptions).toFixed(2));
 
     res.status(200).json({
@@ -198,14 +201,47 @@ export const deleteUser = async (req: Request, res: Response): Promise<void> => 
 
     let user = null;
     if (mongoose.Types.ObjectId.isValid(id)) {
-      user = await User.findByIdAndDelete(id);
+      user = await User.findById(id);
     } else {
-      user = await User.findOneAndDelete({ _id: id });
+      user = await User.findOne({ _id: id });
     }
 
     if (!user) {
       res.status(404).json({ success: false, message: 'User not found' });
       return;
+    }
+
+    const userId = user._id.toString();
+    const userEmail = user.email;
+
+    // Clean up associated data based on user role
+    if (user.role === 'teacher') {
+      // For teachers: delete their exams, questions, but preserve purchases for audit
+      const teacherExams = await Exam.find({ $or: [{ teacherId: userId }, { teacherEmail: userEmail }] });
+      const examIds = teacherExams.map(e => e._id);
+
+      await Promise.all([
+        Exam.deleteMany({ $or: [{ teacherId: userId }, { teacherEmail: userEmail }] }),
+        // Questions created by teacher (from Question Bank)
+        Question.deleteMany({ createdBy: userId }),
+        // Clean up exam attempts and submissions for teacher's exams
+        ExamAttempt.deleteMany({ examId: { $in: examIds } }),
+        ExamSubmission.deleteMany({ examId: { $in: examIds } }),
+        // Teacher subscriptions
+        UserSubscription.deleteMany({ userId: userId, role: 'teacher' }),
+      ]);
+    } else if (user.role === 'student') {
+      // For students: clean up their attempts, submissions, purchases, subscriptions, practice sessions
+      await Promise.all([
+        ExamAttempt.deleteMany({ studentId: userId }),
+        ExamSubmission.deleteMany({ $or: [{ studentId: userId }, { studentEmail: userEmail }] }),
+        // Note: ExamPurchase preserved for financial audit trail
+        UserSubscription.deleteMany({ userId: userId, role: 'student' }),
+        // Practice sessions
+        PracticeSession.deleteMany({ userId: userId }),
+        // Notifications
+        Notification.deleteMany({ userId: userId }),
+      ]);
     }
 
     // Clean up associated Better-Auth sessions and accounts if present in MongoDB
@@ -215,6 +251,9 @@ export const deleteUser = async (req: Request, res: Response): Promise<void> => 
         mongoose.connection.db.collection('account').deleteMany({ userId: id }),
       ]);
     }
+
+    // Finally delete the user
+    await User.findByIdAndDelete(user._id);
 
     res.status(200).json({
       success: true,
@@ -625,34 +664,18 @@ export const getAnalyticsOverview = async (req: Request, res: Response): Promise
     const activeConnections = Math.max(1, totalUsers > 0 ? Math.min(totalUsers, Math.max(2, Math.ceil(activeUsers * 0.08))) : 1);
 
     // 6-point rolling telemetry (every 2 hours over past 10 hours up to now)
+    // For historical points, we only have current measurements, so use current values
     const systemHealth = [];
     for (let i = 5; i >= 0; i--) {
       const t = new Date(now.getTime() - i * 2 * 60 * 60 * 1000);
-      if (i === 0) {
-        systemHealth.push({
-          timestamp: t.toISOString(),
-          cpuUsage,
-          memoryUsage,
-          diskUsage: 58,
-          apiLatency,
-          activeConnections,
-        });
-      } else {
-        const varianceFactor = Math.sin(i * 1.5) * 0.08;
-        const varCpu = Number(Math.max(5, Math.min(95, cpuUsage * (1 + varianceFactor))).toFixed(1));
-        const varMem = Number(Math.max(10, Math.min(95, memoryUsage * (1 + varianceFactor * 0.5))).toFixed(1));
-        const varLatency = Math.max(1, Math.round(apiLatency * (1 + varianceFactor * 0.6)));
-        const varConn = Math.max(1, Math.round(activeConnections * (1 + varianceFactor * 0.4)));
-
-        systemHealth.push({
-          timestamp: t.toISOString(),
-          cpuUsage: varCpu,
-          memoryUsage: varMem,
-          diskUsage: 58,
-          apiLatency: varLatency,
-          activeConnections: varConn,
-        });
-      }
+      systemHealth.push({
+        timestamp: t.toISOString(),
+        cpuUsage,
+        memoryUsage,
+        diskUsage: 58,
+        apiLatency,
+        activeConnections,
+      });
     }
 
     res.status(200).json({
