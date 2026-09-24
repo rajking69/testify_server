@@ -16,7 +16,8 @@ export const getPublicExams = async (req: Request, res: Response): Promise<void>
   try {
     const { category, search } = req.query;
     const filter: any = {
-      isPublished: { $ne: false },
+      isPublished: true,
+      status: { $ne: 'draft' },
     };
 
     if (category && category !== 'all' && category !== 'All') {
@@ -244,7 +245,7 @@ export const getExamById = async (req: Request, res: Response): Promise<void> =>
     const isAdmin = Boolean(user && user.role === 'admin');
     const isCreatorOrAdmin = isCreator || isAdmin;
 
-    if (exam.isPublished === false && (exam as any).status !== 'PUBLISHED' && !isCreatorOrAdmin) {
+    if ((exam.isPublished === false || String((exam as any).status).toLowerCase() === 'draft') && !isCreatorOrAdmin) {
       logger.warn({ examId: cleanId, userId: user?.id }, 'Unauthorized access to draft exam');
       res.status(404).json({
         success: false,

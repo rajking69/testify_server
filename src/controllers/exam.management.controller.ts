@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import mongoose from 'mongoose';
 import { Exam } from '../models/exam.model';
+import { ExamAttempt } from '../models/exam-attempt.model';
 import { formatExamResponse } from '../utils/exam.utils';
 import { logger } from '../lib/logger';
 
@@ -129,60 +130,11 @@ export const updateExam = async (req: Request, res: Response): Promise<void> => 
     }
 
     if (!exam) {
-      const {
-        title,
-        description,
-        category,
-        subject,
-        accessType,
-        price,
-        durationMinutes,
-        totalMarks,
-        passMarks,
-        questions,
-        isPublished,
-        startDateTime,
-        endDateTime,
-        date,
-        joinCode,
-        accessToken,
-        status,
-        schedule,
-      } = req.body;
-
-      const formattedQuestions = formatQuestions(questions);
-
-      const created = await Exam.create({
-        _id: mongoose.isValidObjectId(cleanId) ? cleanId : undefined,
-        title: title || 'Examination Paper',
-        description: description || '',
-        category: category || subject || 'General',
-        subject: subject || category || 'General',
-        teacherId: user.id,
-        teacherName: user.name,
-        teacherEmail: user.email,
-        accessType: accessType || 'free',
-        price: Number(price) || 0,
-        durationMinutes: Number(durationMinutes) || 60,
-        totalMarks: Number(totalMarks) || 50,
-        passMarks: Number(passMarks) || 20,
-        questions: formattedQuestions,
-        isPublished: isPublished !== undefined ? Boolean(isPublished) : (status === 'PUBLISHED'),
-        status: status || 'PUBLISHED',
-        joinCode: (joinCode || (cleanId.length <= 10 ? cleanId : Math.random().toString(36).substring(2, 8))).toUpperCase(),
-        accessToken: accessToken || ('tst_' + Math.random().toString(36).substring(2, 12)),
-        startDateTime,
-        endDateTime,
-        date,
-        schedule,
-        requireCamera: Boolean(req.body.requireCamera),
-      });
-
-      logger.info({ examId: created._id, teacherId: user.id, upsert: true }, 'Exam upserted');
-      res.status(200).json({
-        success: true,
-        message: 'Exam upserted and saved successfully',
-        data: created,
+      logger.warn({ examId: cleanId, userId: user.id }, 'Exam not found for update');
+      res.status(404).json({
+        success: false,
+        code: 'NOT_FOUND',
+        message: 'Exam not found',
       });
       return;
     }
@@ -288,8 +240,22 @@ export const deleteExam = async (req: Request, res: Response): Promise<void> => 
   try {
     const { id } = req.params;
     const user = req.user!;
+    const cleanId = (id || '').trim();
 
-    const exam = await Exam.findById(id);
+    let exam = null;
+    if (mongoose.isValidObjectId(cleanId)) {
+      exam = await Exam.findById(cleanId);
+    }
+    if (!exam) {
+      exam = await Exam.findOne({
+        $or: [
+          { joinCode: cleanId.toUpperCase() },
+          { joinCode: cleanId },
+          { accessToken: cleanId },
+        ],
+      });
+    }
+
     if (!exam) {
       logger.warn({ examId: id }, 'Exam not found for deletion');
       res.status(404).json({
@@ -301,7 +267,8 @@ export const deleteExam = async (req: Request, res: Response): Promise<void> => 
     }
 
     const isCreator =
-      exam.teacherId === user.id || (exam.teacherEmail && exam.teacherEmail === user.email);
+      exam.teacherId === user.id ||
+      (exam.teacherEmail && exam.teacherEmail.toLowerCase() === user.email.toLowerCase());
     const isAdmin = user.role === 'admin';
 
     if (!isCreator && !isAdmin) {
@@ -314,9 +281,13 @@ export const deleteExam = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
-    await Exam.findByIdAndDelete(id);
+    // Option A: hard delete exam + attempts, preserve purchases/submissions for audit
+    await Promise.all([
+      ExamAttempt.deleteMany({ examId: exam._id }),
+      Exam.findByIdAndDelete(exam._id),
+    ]);
 
-    logger.info({ examId: id, teacherId: user.id }, 'Exam deleted');
+    logger.info({ examId: exam._id, teacherId: user.id }, 'Exam deleted (attempts cleaned, purchases/submissions preserved)');
     res.status(200).json({
       success: true,
       message: 'Exam deleted successfully',

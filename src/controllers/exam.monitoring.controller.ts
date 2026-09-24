@@ -16,8 +16,26 @@ export const getLiveMonitoringData = async (req: Request, res: Response): Promis
       return;
     }
 
+    // Ownership guard
+    const isCreator = exam.teacherId === user.id || (exam.teacherEmail && exam.teacherEmail.toLowerCase() === user.email.toLowerCase());
+    const isAdmin = user.role === 'admin';
+    if (!isCreator && !isAdmin) {
+      logger.warn({ examId, teacherId: user.id, role: user.role }, 'Unauthorized live monitoring access');
+      res.status(403).json({ success: false, code: 'FORBIDDEN', message: "You are not authorized to monitor this examination." });
+      return;
+    }
+
     const attempts = await ExamAttempt.find({ examId }).sort({ updatedAt: -1 });
     const submissions = await ExamSubmission.find({ examId }).sort({ submittedAt: -1 });
+
+    // O(1) lookup for submissions
+    const submissionMap = new Map<string, any>();
+    for (const s of submissions as any[]) {
+      const k1 = String(s.studentId || '').toLowerCase();
+      const k2 = String(s.studentEmail || '').toLowerCase();
+      if (k1) submissionMap.set(k1, s);
+      if (k2) submissionMap.set(`email:${k2}`, s);
+    }
 
     const now = Date.now();
 
@@ -25,11 +43,7 @@ export const getLiveMonitoringData = async (req: Request, res: Response): Promis
       const remainingMs = Math.max(0, att.expiresAt.getTime() - now);
       const lastPingTime = att.proctoringData?.lastPingAt ? new Date(att.proctoringData.lastPingAt).getTime() : 0;
       const isOnline = lastPingTime > 0 && (now - lastPingTime < 35000);
-      const sub = submissions.find(
-        (s: any) =>
-          s.studentId === att.studentId ||
-          (s.studentEmail && att.studentEmail && s.studentEmail.toLowerCase() === att.studentEmail.toLowerCase())
-      );
+      const sub = submissionMap.get(String(att.studentId || '').toLowerCase()) || submissionMap.get(`email:${String(att.studentEmail || '').toLowerCase()}`);
 
       return {
         attemptId: att._id,
@@ -87,8 +101,10 @@ export const getTeacherExamsSubmissions = async (req: Request, res: Response): P
     const examIds = teacherExams.map((e) => e._id);
     const submissions = await ExamSubmission.find({ examId: { $in: examIds } }).sort({ submittedAt: -1 });
 
+    const examMap = new Map<string, any>();
+    for (const e of teacherExams as any[]) examMap.set(e._id.toString(), e);
     const formatted = submissions.map((sub: any) => {
-      const exam = teacherExams.find((e) => e._id.toString() === sub.examId.toString());
+      const exam = examMap.get(sub.examId.toString());
       return {
         id: sub._id,
         submissionId: sub._id,
