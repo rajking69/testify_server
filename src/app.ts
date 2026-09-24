@@ -103,22 +103,41 @@ app.use(
 );
 app.use(express.urlencoded({ extended: true }));
 
-// Rate limiting for authentication endpoints — skip get-session polling
+// ─── Rate Limiting Helpers ────────────────────────────────────────────────────
+// On Render (and most cloud platforms) the real client IP is in X-Forwarded-For.
+// trust proxy: 1 tells Express to expose it as req.ip correctly.
+// We still fall back to socket address so localhost dev always works.
+const getClientIp = (req: Request): string => {
+  // X-Forwarded-For can be a comma-separated list; take the first (real client)
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded) {
+    const first = Array.isArray(forwarded) ? forwarded[0] : forwarded.split(',')[0];
+    return first.trim();
+  }
+  return req.ip || req.socket?.remoteAddress || 'unknown';
+};
+
+// Endpoints that are polled frequently — never rate-limit these
+const isPollingEndpoint = (req: Request): boolean => {
+  const path = req.path;
+  return (
+    path.includes('get-session') ||
+    path.includes('heartbeat') ||
+    path.includes('session')
+  );
+};
+
+// ─── Auth Rate Limiter (sign-in / sign-up / password reset) ──────────────────
+// Strict: only 20 auth attempts per 15 min per real IP
 const authRateLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
-  skip: (req) => req.path.includes('get-session') || req.path.includes('session'),
-  message: {
-    success: false,
-    code: 'RATE_LIMIT_EXCEEDED',
-    message: 'Too many authentication attempts. Please try again later.',
-  },
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  skip: isPollingEndpoint,
   standardHeaders: true,
   legacyHeaders: false,
   validate: { keyGeneratorIpFallback: false },
-  // Trust proxy is already set for Render
-  keyGenerator: (req) => req.ip || req.socket.remoteAddress || 'unknown',
-  handler: (req, res) => {
+  keyGenerator: getClientIp,
+  handler: (_req, res) => {
     res.status(429).json({
       success: false,
       code: 'RATE_LIMIT_EXCEEDED',
@@ -135,10 +154,12 @@ app.use('/api/auth/reset-password', authRateLimiter);
 app.use('/api/auth/verify-email', authRateLimiter);
 app.use('/api/auth/send-verification-otp', authRateLimiter);
 
-// General API rate limiter (100 requests per 15 minutes per IP)
+// ─── General API Rate Limiter ─────────────────────────────────────────────────
+// 500 requests per 15 min per real IP — generous enough for polling dashboards
 const apiRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 500,
+  skip: isPollingEndpoint,
   message: {
     success: false,
     code: 'RATE_LIMIT_EXCEEDED',
@@ -147,13 +168,14 @@ const apiRateLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   validate: { keyGeneratorIpFallback: false },
-  keyGenerator: (req) => req.ip || req.socket.remoteAddress || 'unknown',
+  keyGenerator: getClientIp,
 });
 
-// Payment rate limiter (10 requests per 15 minutes per IP)
+// ─── Payment Rate Limiter ─────────────────────────────────────────────────────
+// 50 requests per 15 min — enough for legit checkout flows
 const paymentRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10,
+  max: 50,
   message: {
     success: false,
     code: 'RATE_LIMIT_EXCEEDED',
@@ -162,13 +184,15 @@ const paymentRateLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   validate: { keyGeneratorIpFallback: false },
-  keyGenerator: (req) => req.ip || req.socket.remoteAddress || 'unknown',
+  keyGenerator: getClientIp,
 });
 
-// Exam submission/start rate limiter (30 requests per 15 minutes per IP)
+// ─── Exam Action Rate Limiter ─────────────────────────────────────────────────
+// 60 requests per 15 min per IP — covers submit/start/purchase
 const examActionRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 30,
+  max: 60,
+  skip: isPollingEndpoint,
   message: {
     success: false,
     code: 'RATE_LIMIT_EXCEEDED',
@@ -177,10 +201,10 @@ const examActionRateLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   validate: { keyGeneratorIpFallback: false },
-  keyGenerator: (req) => req.ip || req.socket.remoteAddress || 'unknown',
+  keyGenerator: getClientIp,
 });
 
-// Apply general API rate limiting
+// Apply general API rate limiting (skips polling endpoints automatically)
 app.use('/api', apiRateLimiter);
 
 // Apply payment rate limiting
