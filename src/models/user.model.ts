@@ -15,6 +15,7 @@ export interface IUser extends Document {
   premiumExpiresAt?: Date;
   stripeCustomerId?: string;
   stripeSubscriptionId?: string;
+  bookmarkedQuestions: mongoose.Types.ObjectId[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -39,6 +40,7 @@ const UserSchema: Schema = new Schema(
     premiumExpiresAt: { type: Date },
     stripeCustomerId: { type: String },
     stripeSubscriptionId: { type: String },
+    bookmarkedQuestions: [{ type: Schema.Types.ObjectId, ref: 'Question' }],
   },
   {
     timestamps: true,

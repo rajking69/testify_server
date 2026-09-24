@@ -7,6 +7,9 @@ import {
   getPracticeHistory,
   getPracticeSessionById,
   getPracticeSubjects,
+  getBookmarks,
+  addBookmark,
+  removeBookmark,
 } from '../controllers/practice.controller';
 
 const router = Router();
@@ -17,6 +20,9 @@ router.use(requireAuth);
 router.get('/subjects', getPracticeSubjects);
 router.post('/start', startPracticeSession);
 router.get('/history', getPracticeHistory);
+router.get('/bookmarks', getBookmarks);
+router.post('/bookmarks/:questionId', addBookmark);
+router.delete('/bookmarks/:questionId', removeBookmark);
 router.get('/:id', getPracticeSessionById);
 router.post('/:id/answer', submitPracticeAnswer);
 router.post('/:id/finish', finishPracticeSession);
