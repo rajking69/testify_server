@@ -66,7 +66,12 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
     const filter: any = {};
 
     if (mine === 'true' && user) {
-      filter.$or = [{ teacherId: user.id }, { teacherEmail: user.email }];
+      const emailRegex = user.email ? new RegExp(`^${user.email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') : null;
+      filter.$or = [
+        { teacherId: user.id },
+        { teacherEmail: user.email },
+        ...(emailRegex ? [{ teacherEmail: emailRegex }, { creatorEmail: emailRegex }, { createdBy: emailRegex }] : []),
+      ];
     } else if (teacherId) {
       if (user && (user.id === teacherId || user.role === 'admin')) {
         filter.teacherId = teacherId;
@@ -86,10 +91,12 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
     } else if (!user || user.role === 'student') {
       filter.isPublished = { $ne: false };
     } else if (user.role === 'teacher') {
+      const emailRegex = user.email ? new RegExp(`^${user.email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') : null;
       filter.$or = [
         { isPublished: { $ne: false } },
         { teacherId: user.id },
         { teacherEmail: user.email },
+        ...(emailRegex ? [{ teacherEmail: emailRegex }, { creatorEmail: emailRegex }, { createdBy: emailRegex }] : []),
       ];
     }
 

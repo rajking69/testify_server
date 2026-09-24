@@ -291,7 +291,7 @@ export const deleteExam = async (req: Request, res: Response): Promise<void> => 
     res.status(200).json({
       success: true,
       message: 'Exam deleted successfully',
-      data: { id },
+      data: { id: exam._id },
     });
   } catch (error) {
     logger.error({ error, examId: req.params.id, userId: req.user?.id }, 'Failed to delete exam');
