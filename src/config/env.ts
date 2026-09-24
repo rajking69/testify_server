@@ -59,5 +59,7 @@ export const env = {
   stripe_webhook_secret: process.env.STRIPE_WEBHOOK_SECRET || '',
   stripe_teacher_premium_price_id: process.env.STRIPE_TEACHER_PREMIUM_PRICE_ID || '',
   gemini_api_key: process.env.GEMINI_API_KEY || '',
-  gemini_model: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
+  gemini_model: process.env.GEMINI_MODEL || 'gemini-3.6-flash',
+  xai_api_key: process.env.XAI_API_KEY || '',
+  grok_model: process.env.GROK_MODEL || 'grok-3',
 };
