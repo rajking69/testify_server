@@ -1,4 +1,6 @@
 import { Server, Socket } from 'socket.io';
+import mongoose from 'mongoose';
+import { Exam } from '../models/exam.model';
 import { ExamAttempt } from '../models/exam-attempt.model';
 import { socketAuthMiddleware, validateStudentIdentity, validateTeacherExamAccess, validateTeacherWarning, validateStudentExamMembership, AuthenticatedUser } from './auth.socket';
 
@@ -35,12 +37,10 @@ export function initMonitoringSocket(io: Server) {
   io.use(socketAuthMiddleware);
 
   const broadcastToTeachers = (examId?: string) => {
-    const list = Array.from(activeCandidates.values());
-    io.to('teacher:monitoring').emit('monitoring:candidates_update', list);
-    if (examId) {
-      const filtered = list.filter((c) => c.examId === examId);
-      io.to(`teacher:monitoring:${examId}`).emit('monitoring:candidates_update', filtered);
-    }
+    if (!examId) return;
+    const list = Array.from(activeCandidates.values()).filter((c) => c.examId === examId);
+    io.to(`teacher:monitoring:${examId}`).emit('monitoring:candidates_update', list);
+    // No global broadcast — prevents cross-teacher leak
   };
 
   io.on('connection', (socket: Socket) => {
@@ -64,13 +64,14 @@ export function initMonitoringSocket(io: Server) {
       // Use authenticated user's identity as source of truth
       const candidateKey = user.id; // Use authenticated user ID as key
       
-      // Verify exam membership if examId provided
+      // Membership check is best-effort for monitoring; do not block join if no DB attempt yet (free/practice exams)
       if (data.examId) {
-        const hasMembership = await validateStudentExamMembership(user.id, data.examId);
-        if (!hasMembership) {
-          socket.emit('error', { message: 'Not enrolled in this exam' });
-          return;
-        }
+        try {
+          const hasMembership = await validateStudentExamMembership(user.id, data.examId);
+          if (!hasMembership) {
+            console.warn(`[Monitoring] Student ${user.id} joining ${data.examId} without active attempt — allowing for live preview`);
+          }
+        } catch {}
       }
 
       // Cancel any disconnect grace timer if student reconnected
@@ -107,6 +108,32 @@ export function initMonitoringSocket(io: Server) {
 
       activeCandidates.set(candidateKey, telemetry);
       socket.data.candidateKey = candidateKey;
+
+      // Ensure ExamAttempt exists so HTTP polling (getLiveMonitoringData) also sees candidate
+      if (data.examId) {
+        try {
+          if (mongoose.isValidObjectId(data.examId)) {
+            const examDoc = await Exam.findById(data.examId);
+            if (examDoc) {
+              const existingAttempt = await ExamAttempt.findOne({ examId: data.examId, studentId: user.id, status: 'in_progress' });
+              if (!existingAttempt) {
+                const durationMs = (examDoc.durationMinutes || 30) * 60 * 1000;
+                await ExamAttempt.create({
+                  studentId: user.id,
+                  studentName: user.name,
+                  studentEmail: user.email,
+                  examId: data.examId,
+                  startedAt: new Date(),
+                  expiresAt: new Date(Date.now() + durationMs),
+                  status: 'in_progress',
+                  proctoringData: { lastPingAt: new Date(), answersCount: 0, tabSwitchCount: 0 },
+                });
+                console.log(`[Monitoring] Auto-created ExamAttempt for ${user.id} → ${data.examId}`);
+              }
+            }
+          }
+        } catch (e) { console.warn("[Monitoring] auto-create attempt failed", (e as any)?.message); }
+      }
 
       broadcastToTeachers(telemetry.examId);
     });
@@ -302,9 +329,12 @@ export function initMonitoringSocket(io: Server) {
         frame: data.frame,
       };
 
-      io.to('teacher:monitoring').emit('monitoring:video_frame', framePayload);
-      if (data.examId || current?.examId) {
-        io.to(`teacher:monitoring:${data.examId || current?.examId}`).emit('monitoring:video_frame', framePayload);
+      // Only emit to exam-specific room to avoid cross-exam leak; fallback to global only if no examId
+      const targetExamId = data.examId || current?.examId;
+      if (targetExamId) {
+        io.to(`teacher:monitoring:${targetExamId}`).emit('monitoring:video_frame', framePayload);
+      } else {
+        io.to('teacher:monitoring').emit('monitoring:video_frame', framePayload);
       }
     });
 
@@ -374,13 +404,13 @@ export function initMonitoringSocket(io: Server) {
     socket.on('disconnect', () => {
       const candidateKey = socket.data.candidateKey;
       if (candidateKey && activeCandidates.has(candidateKey)) {
-        // Give 12 seconds grace period in case candidate reloads the page
+        const current = activeCandidates.get(candidateKey);
+        const examId = current?.examId;
         const timer = setTimeout(() => {
           activeCandidates.delete(candidateKey);
           disconnectTimers.delete(candidateKey);
-          broadcastToTeachers();
+          if (examId) broadcastToTeachers(examId);
         }, 12000);
-
         disconnectTimers.set(candidateKey, timer);
       }
     });
