@@ -7,6 +7,11 @@ import { UserSubscription } from '../models/subscription.model';
 import { formatExamResponse, formatExamListResponse } from '../utils/exam.utils';
 import { logger } from '../lib/logger';
 
+// Escape user input for safe use in RegExp
+function escapeRegExp(input: string): string {
+  return String(input).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export const getPublicExams = async (req: Request, res: Response): Promise<void> => {
   try {
     const { category, search } = req.query;
@@ -16,14 +21,16 @@ export const getPublicExams = async (req: Request, res: Response): Promise<void>
     };
 
     if (category && category !== 'all' && category !== 'All') {
+      const safeCategory = escapeRegExp(String(category));
       filter.$or = [
-        { category: new RegExp(`^${category}$`, 'i') },
-        { subject: new RegExp(`^${category}$`, 'i') },
+        { category: new RegExp(`^${safeCategory}$`, 'i') },
+        { subject: new RegExp(`^${safeCategory}$`, 'i') },
       ];
     }
 
     if (search) {
-      filter.title = { $regex: String(search), $options: 'i' };
+      const safeSearch = escapeRegExp(String(search));
+      filter.title = { $regex: safeSearch, $options: 'i' };
     }
 
     const exams = await Exam.find(filter)
@@ -95,7 +102,8 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
 
     const cat = category || subject;
     if (cat && cat !== 'all' && cat !== 'All') {
-      const catRegex = new RegExp(`^${cat}$`, 'i');
+      const safeCat = escapeRegExp(String(cat));
+      const catRegex = new RegExp(`^${safeCat}$`, 'i');
       filter.$and = filter.$and || [];
       filter.$and.push({
         $or: [{ category: catRegex }, { subject: catRegex }],
@@ -107,7 +115,8 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
     }
 
     if (search) {
-      const searchRegex = new RegExp(String(search), 'i');
+      const safeSearch = escapeRegExp(String(search));
+      const searchRegex = new RegExp(safeSearch, 'i');
       const searchOr = [{ title: searchRegex }, { description: searchRegex }, { category: searchRegex }, { subject: searchRegex }];
       if (filter.$or) {
         filter.$and = filter.$and || [];

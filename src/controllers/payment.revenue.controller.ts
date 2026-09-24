@@ -64,7 +64,7 @@ export const getTeacherRevenue = async (
     });
 
     const grossRevenue = dedupedPurchases.reduce((sum: number, p: any) => sum + (p.pricePaid || 0), 0);
-    const platformFeePercentage = 40;
+    const platformFeePercentage = 15; // 15% platform commission (consistent with admin dashboard)
     const platformFees = (grossRevenue * platformFeePercentage) / 100;
     const teacherEarnings = grossRevenue - platformFees;
 

@@ -3,6 +3,11 @@ import { Question, IQuestion } from '../models/question.model';
 import { validateQuestionPayload } from '../validations/question.validation';
 import { MAX_QUESTIONS_PER_EXAM } from '../config/question.constants';
 
+// Escape user input for safe use in RegExp
+function escapeRegExp(input: string): string {
+  return String(input).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // 1. POST /api/questions - Create Question
 export const createQuestion = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -97,7 +102,8 @@ export const getQuestions = async (req: Request, res: Response): Promise<void> =
     }
 
     if (topic) {
-      filter.topic = { $regex: new RegExp(String(topic), 'i') };
+      const safeTopic = escapeRegExp(String(topic));
+      filter.topic = { $regex: safeTopic, $options: 'i' };
     }
 
     if (difficulty) {
@@ -115,17 +121,18 @@ export const getQuestions = async (req: Request, res: Response): Promise<void> =
     const andConditions: any[] = [];
 
     if (category || subject) {
-      const catVal = String(category || subject);
+      const safeCatVal = escapeRegExp(String(category || subject));
       andConditions.push({
         $or: [
-          { category: { $regex: new RegExp(catVal, 'i') } },
-          { subject: { $regex: new RegExp(catVal, 'i') } },
+          { category: { $regex: safeCatVal, $options: 'i' } },
+          { subject: { $regex: safeCatVal, $options: 'i' } },
         ],
       });
     }
 
     if (search && String(search).trim()) {
-      const searchRegex = new RegExp(String(search).trim(), 'i');
+      const safeSearch = escapeRegExp(String(search).trim());
+      const searchRegex = new RegExp(safeSearch, 'i');
       andConditions.push({
         $or: [
           { questionText: searchRegex },
@@ -450,13 +457,16 @@ export const selectQuestionsForExam = async (req: Request, res: Response): Promi
       if (user.role !== 'admin') matchFilter.createdBy = user.id;
 
       if (category || subject) {
-        const catVal = String(category || subject);
+        const safeCatVal = escapeRegExp(String(category || subject));
         matchFilter.$or = [
-          { category: { $regex: new RegExp(catVal, 'i') } },
-          { subject: { $regex: new RegExp(catVal, 'i') } },
+          { category: { $regex: safeCatVal, $options: 'i' } },
+          { subject: { $regex: safeCatVal, $options: 'i' } },
         ];
       }
-      if (topic) matchFilter.topic = { $regex: new RegExp(String(topic), 'i') };
+      if (topic) {
+        const safeTopic = escapeRegExp(String(topic));
+        matchFilter.topic = { $regex: safeTopic, $options: 'i' };
+      }
       if (difficulty) matchFilter.difficulty = String(difficulty).toUpperCase();
       if (questionType) matchFilter.questionType = String(questionType).toUpperCase();
       matchFilter.status = 'READY';

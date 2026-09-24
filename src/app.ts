@@ -1,11 +1,10 @@
 import express, { Application, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
-import mongoose from 'mongoose';
+import helmet from 'helmet';
 import { toNodeHandler } from 'better-auth/node';
 import { auth } from './lib/auth';
 import { env } from './config/env';
-import { connectDB } from './config/db';
 import apiRoutes from './routes';
 import { Server as SocketIOServer } from 'socket.io';
 
@@ -24,6 +23,34 @@ export function getSocketIOInstance(): SocketIOServer | null {
 
 // Trust reverse proxy (Required for Render HTTPS load balancers)
 app.set('trust proxy', 1);
+
+// Helmet for security headers (CSP, HSTS, etc.)
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: {
+        "default-src": ["'self'"],
+        "script-src": ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+        "style-src": ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        "font-src": ["'self'", "https://fonts.gstatic.com", "data:"],
+        "img-src": ["'self'", "data:", "https:", "blob:"],
+        "connect-src": ["'self'", "https://api.stripe.com", "wss:", "ws:"],
+        "frame-src": ["'self'", "https://js.stripe.com", "https://hooks.stripe.com"],
+        "object-src": ["'none'"],
+        "base-uri": ["'self'"],
+        "form-action": ["'self'"],
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+    hsts: {
+      maxAge: 31536000,
+      includeSubDomains: true,
+      preload: true,
+    },
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+  })
+);
 
 // Normalize allowed origins (strip trailing slash)
 const allowedOrigins = env.allowed_origins.map((o) => o.replace(/\/+$/, ''));
@@ -66,20 +93,6 @@ app.use(
   })
 );
 
-// DB connection is established at startup in server.ts
-// This middleware is kept for serverless/Vercel compatibility where cold starts may need reconnection
-app.use(async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    // Only attempt reconnection if not already connected
-    if (mongoose.connection.readyState === 0) {
-      await connectDB();
-    }
-    next();
-  } catch (error) {
-    next(error);
-  }
-});
-
 // Body parsers with rawBody preservation for Stripe webhook signature verification
 app.use(
   express.json({
@@ -120,6 +133,60 @@ app.use('/api/auth/forget-password', authRateLimiter);
 app.use('/api/auth/reset-password', authRateLimiter);
 app.use('/api/auth/verify-email', authRateLimiter);
 app.use('/api/auth/send-verification-otp', authRateLimiter);
+
+// General API rate limiter (100 requests per 15 minutes per IP)
+const apiRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  message: {
+    success: false,
+    code: 'RATE_LIMIT_EXCEEDED',
+    message: 'Too many API requests. Please try again later.',
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip || req.socket.remoteAddress || 'unknown',
+});
+
+// Payment rate limiter (10 requests per 15 minutes per IP)
+const paymentRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: {
+    success: false,
+    code: 'RATE_LIMIT_EXCEEDED',
+    message: 'Too many payment requests. Please try again later.',
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip || req.socket.remoteAddress || 'unknown',
+});
+
+// Exam submission/start rate limiter (30 requests per 15 minutes per IP)
+const examActionRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  message: {
+    success: false,
+    code: 'RATE_LIMIT_EXCEEDED',
+    message: 'Too many exam actions. Please try again later.',
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip || req.socket.remoteAddress || 'unknown',
+});
+
+// Apply general API rate limiting
+app.use('/api', apiRateLimiter);
+
+// Apply payment rate limiting
+app.use('/api/payments', paymentRateLimiter);
+
+// Apply exam action rate limiting
+app.use('/api/exams/:id/submit', examActionRateLimiter);
+app.use('/api/exams/:id/start-attempt', examActionRateLimiter);
+app.use('/api/exams/:id/heartbeat', examActionRateLimiter);
+app.use('/api/exams/:id/purchase', examActionRateLimiter);
 
 // Better Auth Route Handler
 app.all('/api/auth/*', toNodeHandler(auth));

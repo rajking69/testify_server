@@ -2,7 +2,14 @@ import { Server, Socket } from 'socket.io';
 import mongoose from 'mongoose';
 import { Exam } from '../models/exam.model';
 import { ExamAttempt } from '../models/exam-attempt.model';
-import { socketAuthMiddleware, validateStudentIdentity, validateTeacherExamAccess, validateTeacherWarning, validateStudentExamMembership, AuthenticatedUser } from './auth.socket';
+import {
+  socketAuthMiddleware,
+  validateStudentIdentity,
+  validateTeacherExamAccess,
+  validateTeacherWarning,
+  validateStudentExamMembership,
+  AuthenticatedUser,
+} from './auth.socket';
 
 export interface CandidateTelemetry {
   id: string;
@@ -24,6 +31,7 @@ export interface CandidateTelemetry {
   startedAt: string;
   hasCamera?: boolean;
   latestFrame?: string;
+  role?: 'student' | 'teacher';
 }
 
 // In-memory registry of actively connected students taking exams
@@ -45,6 +53,11 @@ export function initMonitoringSocket(io: Server) {
 
   io.on('connection', (socket: Socket) => {
     const user = socket.data.user as AuthenticatedUser;
+    if (!user) {
+      socket.disconnect();
+      return;
+    }
+
     // 1. Student joins live examination
     socket.on('student:join', async (data: {
       studentId?: string;
@@ -63,7 +76,7 @@ export function initMonitoringSocket(io: Server) {
 
       // Use authenticated user's identity as source of truth
       const candidateKey = user.id; // Use authenticated user ID as key
-      
+
       // Membership check is best-effort for monitoring; do not block join if no DB attempt yet (free/practice exams)
       if (data.examId) {
         try {
@@ -89,8 +102,8 @@ export function initMonitoringSocket(io: Server) {
       const telemetry: CandidateTelemetry = {
         id: candidateKey,
         socketId: socket.id,
-        studentId: user.id, // Use authenticated user ID
-        name: user.name,
+        studentId: user.id,
+        name: data.name || user.name || existing?.name || 'Student Candidate',
         email: user.email,
         rollNo: data.rollNo || existing?.rollNo || '',
         examId: data.examId || existing?.examId || 'general',
@@ -150,7 +163,7 @@ export function initMonitoringSocket(io: Server) {
         socket.emit('error', { message: 'Unauthorized: Cannot send telemetry for another student' });
         return;
       }
-      
+
       if (current) {
         const updated: CandidateTelemetry = {
           ...current,
@@ -239,7 +252,7 @@ export function initMonitoringSocket(io: Server) {
         }
         socket.join(`teacher:monitoring:${data.examId}`);
       }
-      
+
       socket.join('teacher:monitoring');
 
       const allList = Array.from(activeCandidates.values());
@@ -310,12 +323,26 @@ export function initMonitoringSocket(io: Server) {
 
     // 7. Teacher requests telemetry refresh
     socket.on('teacher:request_refresh', (data?: { examId?: string }) => {
+      // Verify user is a teacher or admin
+      if (user.role !== 'teacher' && user.role !== 'admin') {
+        socket.emit('error', { message: 'Unauthorized: Teacher role required' });
+        return;
+      }
       broadcastToTeachers(data?.examId);
     });
 
     // 9. Student transmits webcam video frame
     socket.on('student:video_frame', (data: { studentId: string; examId?: string; frame: string }) => {
+      // Verify user is a student and matches candidateKey
+      if (user.role !== 'student') {
+        socket.emit('error', { message: 'Unauthorized: Student role required' });
+        return;
+      }
       const candidateKey = socket.data.candidateKey || data.studentId;
+      if (candidateKey !== user.id) {
+        socket.emit('error', { message: 'Unauthorized: Cannot send video for another student' });
+        return;
+      }
       if (!candidateKey) return;
 
       const current = activeCandidates.get(candidateKey);
@@ -340,19 +367,33 @@ export function initMonitoringSocket(io: Server) {
 
     // 10. Teacher requests live video stream from student
     socket.on('teacher:request_video_stream', (data: { studentId: string }) => {
+      // Verify user is a teacher or admin
+      if (user.role !== 'teacher' && user.role !== 'admin') {
+        socket.emit('error', { message: 'Unauthorized: Teacher role required' });
+        return;
+      }
       if (!data.studentId) return;
       io.to('student:' + data.studentId).emit('proctor:start_video_stream');
     });
 
     // 11. Teacher stops live video stream
     socket.on('teacher:stop_video_stream', (data: { studentId: string }) => {
+      // Verify user is a teacher or admin
+      if (user.role !== 'teacher' && user.role !== 'admin') {
+        socket.emit('error', { message: 'Unauthorized: Teacher role required' });
+        return;
+      }
       if (!data.studentId) return;
       io.to('student:' + data.studentId).emit('proctor:stop_video_stream');
     });
 
-
     // WebRTC Signaling: Teacher sends offer
     socket.on('webrtc:offer', (data: { studentId: string; offer: any }) => {
+      // Verify user is a teacher or admin
+      if (user.role !== 'teacher' && user.role !== 'admin') {
+        socket.emit('error', { message: 'Unauthorized: Teacher role required' });
+        return;
+      }
       if (!data.studentId) return;
       io.to('student:' + data.studentId).emit('webrtc:offer', {
         teacherSocketId: socket.id,
@@ -362,14 +403,19 @@ export function initMonitoringSocket(io: Server) {
 
     // WebRTC Signaling: Student sends answer
     socket.on('webrtc:answer', (data: { studentId: string; teacherSocketId?: string; answer: any }) => {
+      // Verify user is a student
+      if (user.role !== 'student') {
+        socket.emit('error', { message: 'Unauthorized: Student role required' });
+        return;
+      }
       if (data.teacherSocketId) {
         io.to(data.teacherSocketId).emit('webrtc:answer', {
-          studentId: data.studentId,
+          studentId: user.id,
           answer: data.answer,
         });
       } else {
         io.to('teacher:monitoring').emit('webrtc:answer', {
-          studentId: data.studentId,
+          studentId: user.id,
           answer: data.answer,
         });
       }
@@ -377,25 +423,36 @@ export function initMonitoringSocket(io: Server) {
 
     // WebRTC Signaling: ICE candidate exchange
     socket.on('webrtc:ice_candidate', (data: { targetStudentId?: string; targetTeacherSocketId?: string; candidate: any; fromStudentId?: string }) => {
-      if (data.targetStudentId) {
-        io.to('student:' + data.targetStudentId).emit('webrtc:ice_candidate', {
-          candidate: data.candidate,
-        });
-      } else if (data.targetTeacherSocketId) {
-        io.to(data.targetTeacherSocketId).emit('webrtc:ice_candidate', {
-          fromStudentId: data.fromStudentId,
-          candidate: data.candidate,
-        });
-      } else {
-        io.to('teacher:monitoring').emit('webrtc:ice_candidate', {
-          fromStudentId: data.fromStudentId,
-          candidate: data.candidate,
-        });
+      if (user.role === 'teacher' || user.role === 'admin') {
+        // Teacher sending ICE candidate to student
+        if (data.targetStudentId) {
+          io.to('student:' + data.targetStudentId).emit('webrtc:ice_candidate', {
+            candidate: data.candidate,
+          });
+        }
+      } else if (user.role === 'student') {
+        // Student sending ICE candidate to teacher
+        if (data.targetTeacherSocketId) {
+          io.to(data.targetTeacherSocketId).emit('webrtc:ice_candidate', {
+            fromStudentId: user.id,
+            candidate: data.candidate,
+          });
+        } else {
+          io.to('teacher:monitoring').emit('webrtc:ice_candidate', {
+            fromStudentId: user.id,
+            candidate: data.candidate,
+          });
+        }
       }
     });
 
     // WebRTC Signaling: Hang up / close stream
     socket.on('webrtc:hangup', (data: { studentId: string }) => {
+      // Verify user is a teacher or admin
+      if (user.role !== 'teacher' && user.role !== 'admin') {
+        socket.emit('error', { message: 'Unauthorized: Teacher role required' });
+        return;
+      }
       if (!data.studentId) return;
       io.to('student:' + data.studentId).emit('webrtc:hangup');
     });

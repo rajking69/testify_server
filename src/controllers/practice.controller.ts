@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { PracticeSession } from '../models/practice-session.model';
 import { Question } from '../models/question.model';
+import User from '../models/user.model';
 
 // Start a new practice session by drawing questions from question bank
 export const startPracticeSession = async (req: Request, res: Response): Promise<void> => {
@@ -11,13 +12,23 @@ export const startPracticeSession = async (req: Request, res: Response): Promise
       return;
     }
 
-    const { category, subject, topic, difficulty, count = 10 } = req.body;
+    const { category, subject, topic, topics, difficulty, difficulties, count = 10 } = req.body;
 
     const filter: any = { status: 'READY' };
     if (category) filter.category = category;
     if (subject) filter.subject = subject;
-    if (topic) filter.topic = topic;
-    if (difficulty) filter.difficulty = difficulty;
+    
+    if (topics && Array.isArray(topics) && topics.length > 0) {
+      filter.topic = { $in: topics };
+    } else if (topic) {
+      filter.topic = topic;
+    }
+
+    if (difficulties && Array.isArray(difficulties) && difficulties.length > 0) {
+      filter.difficulty = { $in: difficulties };
+    } else if (difficulty) {
+      filter.difficulty = difficulty;
+    }
 
     const countNum = parseInt(count as string, 10) || 10;
     const questions = await Question.aggregate([
@@ -295,3 +306,85 @@ export const getPracticeSessionById = async (req: Request, res: Response): Promi
   }
 };
 
+// Get bookmarked questions for the user
+export const getBookmarks = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.id;
+    const user = await User.findById(userId).populate('bookmarkedQuestions');
+    
+    if (!user) {
+      res.status(404).json({ success: false, message: 'User not found' });
+      return;
+    }
+
+    // Format for frontend
+    const questions = user.bookmarkedQuestions || [];
+    
+    res.status(200).json({
+      success: true,
+      data: questions,
+    });
+  } catch (error: unknown) {
+    res.status(500).json({ success: false, message: error instanceof Error ? error.message : String(error) });
+  }
+};
+
+// Add a question to bookmarks
+export const addBookmark = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.id;
+    const { questionId } = req.params;
+
+    const user = await User.findById(userId);
+    
+    if (!user) {
+      res.status(404).json({ success: false, message: 'User not found' });
+      return;
+    }
+
+    if (!user.bookmarkedQuestions) {
+      user.bookmarkedQuestions = [];
+    }
+
+    if (!user.bookmarkedQuestions.includes(questionId as any)) {
+      user.bookmarkedQuestions.push(questionId as any);
+      await user.save();
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Question bookmarked successfully',
+    });
+  } catch (error: unknown) {
+    res.status(500).json({ success: false, message: error instanceof Error ? error.message : String(error) });
+  }
+};
+
+// Remove a question from bookmarks
+export const removeBookmark = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.id;
+    const { questionId } = req.params;
+
+    const user = await User.findById(userId);
+    
+    if (!user) {
+      res.status(404).json({ success: false, message: 'User not found' });
+      return;
+    }
+
+    if (user.bookmarkedQuestions) {
+      user.bookmarkedQuestions = user.bookmarkedQuestions.filter(
+        (id: any) => id.toString() !== questionId
+      );
+      await user.save();
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Question removed from bookmarks',
+    });
+  } catch (error: unknown) {
+    res.status(500).json({ success: false, message: error instanceof Error ? error.message : String(error) });
+  }
+};
