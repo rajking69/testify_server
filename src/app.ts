@@ -103,10 +103,11 @@ app.use(
 );
 app.use(express.urlencoded({ extended: true }));
 
-// Rate limiting for authentication endpoints
+// Rate limiting for authentication endpoints — skip get-session polling
 const authRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 20, // limit each IP to 20 requests per windowMs
+  max: 100,
+  skip: (req) => req.path.includes('get-session') || req.path.includes('session'),
   message: {
     success: false,
     code: 'RATE_LIMIT_EXCEEDED',
@@ -145,6 +146,7 @@ const apiRateLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { keyGeneratorIpFallback: false },
   keyGenerator: (req) => req.ip || req.socket.remoteAddress || 'unknown',
 });
 
@@ -159,6 +161,7 @@ const paymentRateLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { keyGeneratorIpFallback: false },
   keyGenerator: (req) => req.ip || req.socket.remoteAddress || 'unknown',
 });
 
@@ -173,6 +176,7 @@ const examActionRateLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { keyGeneratorIpFallback: false },
   keyGenerator: (req) => req.ip || req.socket.remoteAddress || 'unknown',
 });
 
