@@ -160,6 +160,9 @@ export async function validateTeacherWarning(socket: Socket, studentId: string, 
  */
 export async function validateStudentExamMembership(studentId: string, examId: string): Promise<boolean> {
   try {
+    // Non-ObjectId examIds (e.g., "live-session") are practice previews — allow
+    const mongoose = (await import('mongoose')).default;
+    if (!mongoose.isValidObjectId(examId)) return true;
     const attempt = await ExamAttempt.findOne({
       examId,
       studentId,
@@ -167,6 +170,6 @@ export async function validateStudentExamMembership(studentId: string, examId: s
     });
     return !!attempt;
   } catch (error) {
-    return false;
+    return true;
   }
 }

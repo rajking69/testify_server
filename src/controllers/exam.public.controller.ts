@@ -16,7 +16,8 @@ export const getPublicExams = async (req: Request, res: Response): Promise<void>
   try {
     const { category, search } = req.query;
     const filter: any = {
-      isPublished: { $ne: false },
+      isPublished: true,
+      status: { $ne: 'draft' },
     };
 
     if (category && category !== 'all' && category !== 'All') {
@@ -65,7 +66,12 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
     const filter: any = {};
 
     if (mine === 'true' && user) {
-      filter.$or = [{ teacherId: user.id }, { teacherEmail: user.email }];
+      const emailRegex = user.email ? new RegExp(`^${user.email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') : null;
+      filter.$or = [
+        { teacherId: user.id },
+        { teacherEmail: user.email },
+        ...(emailRegex ? [{ teacherEmail: emailRegex }, { creatorEmail: emailRegex }, { createdBy: emailRegex }] : []),
+      ];
     } else if (teacherId) {
       if (user && (user.id === teacherId || user.role === 'admin')) {
         filter.teacherId = teacherId;
@@ -85,10 +91,12 @@ export const getAllExams = async (req: Request, res: Response): Promise<void> =>
     } else if (!user || user.role === 'student') {
       filter.isPublished = { $ne: false };
     } else if (user.role === 'teacher') {
+      const emailRegex = user.email ? new RegExp(`^${user.email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') : null;
       filter.$or = [
         { isPublished: { $ne: false } },
         { teacherId: user.id },
         { teacherEmail: user.email },
+        ...(emailRegex ? [{ teacherEmail: emailRegex }, { creatorEmail: emailRegex }, { createdBy: emailRegex }] : []),
       ];
     }
 
@@ -244,7 +252,7 @@ export const getExamById = async (req: Request, res: Response): Promise<void> =>
     const isAdmin = Boolean(user && user.role === 'admin');
     const isCreatorOrAdmin = isCreator || isAdmin;
 
-    if (exam.isPublished === false && (exam as any).status !== 'PUBLISHED' && !isCreatorOrAdmin) {
+    if ((exam.isPublished === false || String((exam as any).status).toLowerCase() === 'draft') && !isCreatorOrAdmin) {
       logger.warn({ examId: cleanId, userId: user?.id }, 'Unauthorized access to draft exam');
       res.status(404).json({
         success: false,

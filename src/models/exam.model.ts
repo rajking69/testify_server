@@ -32,6 +32,7 @@ export interface IExam extends Document {
   passMarks: number;
   questions: IQuestion[];
   isPublished: boolean;
+  resultsPublished?: boolean;
   totalEnrolled: number;
   completedCount: number;
   joinCode?: string;
@@ -93,6 +94,7 @@ const examSchema = new Schema<IExam>(
     passMarks: { type: Number, required: true, default: 40 },
     questions: [questionSchema],
     isPublished: { type: Boolean, default: true, index: true },
+    resultsPublished: { type: Boolean, default: true, index: true },
     joinCode: { type: String, index: true },
     accessToken: { type: String, index: true },
     startDateTime: { type: String },
@@ -109,9 +111,19 @@ const examSchema = new Schema<IExam>(
   { timestamps: true }
 );
 
-// Pre-save validation: ensure exam doesn't exceed MongoDB 16MB document limit
-// and question count doesn't exceed 100
+// Keep status and isPublished always in sync: draft => not published, otherwise published
 examSchema.pre('save', function (next) {
+  if (this.isModified('status')) {
+    this.isPublished = this.status !== 'draft';
+  } else if (this.isModified('isPublished')) {
+    if (this.isPublished && this.status === 'draft') this.status = 'published';
+    if (!this.isPublished && this.status !== 'draft') this.status = 'draft';
+  }
+  // Default sync on creation
+  if (this.isNew) {
+    this.isPublished = this.status !== 'draft';
+  }
+
   const MAX_QUESTIONS = 100;
   const MAX_DOCUMENT_SIZE_BYTES = 16 * 1024 * 1024; // 16MB
 
@@ -119,12 +131,29 @@ examSchema.pre('save', function (next) {
     return next(new Error(`Exam cannot have more than ${MAX_QUESTIONS} questions. Current: ${this.questions.length}`));
   }
 
-  // Rough estimate of document size
   const docSize = Buffer.byteLength(JSON.stringify(this.toObject()));
   if (docSize > MAX_DOCUMENT_SIZE_BYTES) {
     return next(new Error(`Exam document size (${Math.round(docSize / 1024 / 1024)}MB) exceeds MongoDB 16MB limit`));
   }
 
+  next();
+});
+
+// Ensure findOneAndUpdate also keeps isPublished/status in sync
+examSchema.pre('findOneAndUpdate', function (next) {
+  const update: any = this.getUpdate();
+  const set = update.$set || update;
+  if (set.status !== undefined) {
+    const st = String(set.status).toLowerCase();
+    set.status = st;
+    set.isPublished = st !== 'draft';
+    if (update.$set) update.$set = set; else this.setUpdate(set);
+  } else if (set.isPublished !== undefined) {
+    const pub = Boolean(set.isPublished);
+    set.isPublished = pub;
+    set.status = pub ? 'published' : 'draft';
+    if (update.$set) update.$set = set; else this.setUpdate(set);
+  }
   next();
 });
 
